@@ -16,7 +16,7 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::process::Command;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, LUID};
 use windows::Win32::Security::{
     AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
     TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES, TOKEN_QUERY,
@@ -179,8 +179,16 @@ fn adjust_privilege(name: &str, attributes: TOKEN_PRIVILEGES_ATTRIBUTES) -> Resu
         };
         let res = AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None)
             .with_context(|| format!("AdjustTokenPrivileges {name}"));
+        // AdjustTokenPrivileges reports success even when it assigned NOTHING (e.g.
+        // the token doesn't hold the privilege); read the real outcome before
+        // CloseHandle clobbers the thread last-error. (disable() swallows this.)
+        let not_all = GetLastError() == ERROR_NOT_ALL_ASSIGNED;
         let _ = CloseHandle(token);
-        res
+        res?;
+        if not_all {
+            bail!("privilege {name} is not held by this token (run elevated)");
+        }
+        Ok(())
     }
 }
 

@@ -9,7 +9,6 @@ pub const BG: Color32 = Color32::from_rgb(8, 13, 20); // deepest (canvas)
 pub const PANEL: Color32 = Color32::from_rgb(11, 18, 27); // toolbars/panels
 pub const PANEL2: Color32 = Color32::from_rgb(16, 27, 39); // widgets
 pub const CYAN: Color32 = Color32::from_rgb(0, 224, 255); // primary accent
-pub const CYAN_SOFT: Color32 = Color32::from_rgb(120, 235, 255);
 pub const CYAN_DIM: Color32 = Color32::from_rgb(0, 150, 184);
 pub const TEXT: Color32 = Color32::from_rgb(216, 240, 248);
 pub const MUTED: Color32 = Color32::from_rgb(110, 150, 168);
