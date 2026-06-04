@@ -73,7 +73,9 @@ private:
     };
     LocalState m_cached;
 
-    static constexpr UINT32 kMaxChannels = 8;
+    // Covers 7.1.4 (12) and 9.1.6 (16). >16ch still clamps (22.2 is essentially
+    // nonexistent on consumer Windows); raising further only grows m_state.
+    static constexpr UINT32 kMaxChannels = 16;
 
     BiquadState m_state[kMaxChannels][kNumBands]{};
     BiquadCoeffs m_coeffs[kNumBands]{};
@@ -83,7 +85,6 @@ private:
 
     Band m_coeffBands[kNumBands]{};
     bool m_coeffsReady = false;
-    bool m_loggedProcess = false; // log the first APOProcess call only
 
     DynamicsProcessor m_dynamics; // AGC + compressor + limiter, after the EQ
 };

@@ -1,5 +1,5 @@
 // EqState.h — C mirror of shared/src/lib.rs::EqState.
-// UPDATE BOTH if you change either. 144 bytes, 8-byte aligned.
+// UPDATE BOTH if you change either. 192 bytes, 8-byte aligned (incl. preamp + dynamics).
 #pragma once
 
 #include <cstdint>

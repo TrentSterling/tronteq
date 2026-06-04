@@ -135,7 +135,6 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::LockForProcess(
     sprintf_s(buf, "LockForProcess ch=%u fs=%u sharedOpen=%d",
               m_channels, m_framesPerSecond, m_shared.IsOpen() ? 1 : 0);
     ApoLog(buf);
-    m_loggedProcess = false;
     return S_OK;
 }
 
