@@ -223,6 +223,8 @@ impl App {
                 });
                 self.apply_rx = None;
                 self.devices = devices::list().unwrap_or_default();
+                self.selected_device =
+                    self.selected_device.min(self.devices.len().saturating_sub(1));
             }
         }
     }
@@ -379,6 +381,8 @@ impl eframe::App for App {
                 }
                 if ui.add_enabled(!busy, egui::Button::new("⟳")).on_hover_text("Refresh device list").clicked() {
                     self.devices = devices::list().unwrap_or_default();
+                    self.selected_device =
+                        self.selected_device.min(self.devices.len().saturating_sub(1));
                 }
                 if busy {
                     ui.spinner();

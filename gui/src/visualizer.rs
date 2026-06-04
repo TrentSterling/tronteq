@@ -152,8 +152,10 @@ fn compute_spectrum(
     let nyq_bin = FFT_SIZE / 2 - 1;
 
     for b in 0..NUM_BARS {
-        let lo = ((edges[b] / hz_per_bin).floor() as usize).max(1);
-        let hi = (((edges[b + 1] / hz_per_bin).ceil() as usize).min(nyq_bin)).max(lo);
+        // clamp BOTH ends to the valid bin range: a tiny/garbage reported sample
+        // rate makes hz_per_bin ~0 and these indices saturate -> work[bin] OOB panic.
+        let lo = ((edges[b] / hz_per_bin).floor() as usize).clamp(1, nyq_bin);
+        let hi = ((edges[b + 1] / hz_per_bin).ceil() as usize).clamp(lo, nyq_bin);
         let mut peak = 0.0f32;
         for bin in lo..=hi {
             peak = peak.max(work[bin].norm());
@@ -235,7 +237,9 @@ unsafe fn run_session(
     client.Start()?;
     CoTaskMemFree(Some(pfmt as *const core::ffi::c_void));
 
-    let usable = is_float && bps == 4 && channels > 0;
+    // channels also bounded above: an absurd/garbage nChannels would make the
+    // `i*channels + c` reads walk far out of bounds.
+    let usable = is_float && bps == 4 && channels > 0 && channels <= 64;
 
     // FFT machinery + persistent ring/state (thread-local, no locks on the hot path).
     let fft = FftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
@@ -292,6 +296,9 @@ unsafe fn run_session(
                             acc += *f.add(i * channels + c);
                         }
                         let mono = acc / channels as f32;
+                        // Sanitize: one NaN/Inf sample (glitchy decoder/plugin) would
+                        // otherwise poison the RMS accumulator + goniometer forever.
+                        let mono = if mono.is_finite() { mono } else { 0.0 };
                         feed(mono, &mut fft_ring, &mut fft_pos, &mut hop, &mut bars);
                         peak = (peak * 0.9999).max(mono.abs());
                         msq = msq * 0.9995 + mono * mono * 0.0005;
@@ -302,6 +309,8 @@ unsafe fn run_session(
                             if let Some(st) = st.as_mut() {
                                 let l = *f.add(i * channels);
                                 let r = if channels > 1 { *f.add(i * channels + 1) } else { l };
+                                let l = if l.is_finite() { l } else { 0.0 };
+                                let r = if r.is_finite() { r } else { 0.0 };
                                 push_stereo(&mut **st, [l, r]);
                             }
                         }

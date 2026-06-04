@@ -45,7 +45,17 @@ pub fn knob(
         }
     };
 
-    let mut t = to_t(*value).clamp(0.0, 1.0);
+    let old = *value;
+    // Guard: a corrupt/torn state value (e.g. <=0 with a log taper) makes to_t NaN,
+    // which would propagate to NaN arc angles and paint nothing.
+    let mut t = {
+        let t = to_t(*value);
+        if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
     let mut changed = false;
     if enabled {
         if resp.dragged() {
@@ -117,5 +127,7 @@ pub fn knob(
     );
 
     let _ = resp.on_hover_text(format!("{}: {:.*}{}", label, decimals.max(2), *value, suffix));
-    changed
+    // Only report a change if the value actually moved (avoids seqlock spam when
+    // dragging a knob that's pinned at a rail).
+    changed && *value != old
 }

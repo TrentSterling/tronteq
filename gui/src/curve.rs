@@ -128,19 +128,26 @@ pub fn draw(
         let b = &mut bands[idx];
         if ctrl {
             // Ctrl+drag slides the band along frequency (gain held).
-            let f = pixel_to_freq(pos.x, rect);
-            b.freq = f.clamp(F_MIN, F_MAX);
-            changed = true;
+            let f = pixel_to_freq(pos.x, rect).clamp(F_MIN, F_MAX);
+            if f != b.freq {
+                b.freq = f;
+                changed = true;
+            }
         } else if shift {
             // Q via vertical drag: up=narrower, down=wider.
             let dy = response.drag_delta().y;
-            b.q = (b.q + -dy * 0.02).clamp(0.1, 10.0);
-            changed = true;
+            let q = (b.q + -dy * 0.02).clamp(0.1, 10.0);
+            if q != b.q {
+                b.q = q;
+                changed = true;
+            }
         } else {
             // Standard: gain via Y position.
-            let db = pixel_to_db(pos.y, rect);
-            b.gain = db.clamp(-DB_RANGE, DB_RANGE);
-            changed = true;
+            let db = pixel_to_db(pos.y, rect).clamp(-DB_RANGE, DB_RANGE);
+            if db != b.gain {
+                b.gain = db;
+                changed = true;
+            }
         }
     }
 

@@ -60,6 +60,14 @@ Goal (orig): it should *look* like pro audio gear, plus the spectrum + spectrogr
 
 Phase A verify: deploy, eyeball it, confirm spectrum tracks audio + knobs drag + still snappy.
 
+## Live feature-goblin queue (S56, requested mid-session — do after red team + modularization)
+- **Curve editor handles / at-a-glance power** (newest ask): draw each band's INDIVIDUAL response bell faintly under the composite, colored by filter type, so you SEE how notch/shelf/peak/etc. stack into the total ("how they add up... more powerful at a glance"). Add draggable Q/width handles on the hovered/active node (Illustrator/Photoshop-style control points, alt to shift-drag/scroll). Per-band value tags / mini gain bars. "make simple vis better AND complex vis better."
+- **Analyzer measurement modes**: spectrum TILT (Flat / +3 / +4.5 dB-oct pink) + volume-independent NORMALIZE first; then ballistics (fast/slow/avg), channel mode (mono/LR/MS), pre-vs-post-EQ ghost (divide measured spectrum by our known EQ magnitude response — only the EQ is invertible, not the nonlinear dynamics), reference/target-curve overlay (on-ramp to AutoEq). NOTE: viz is volume- AND compressor-dependent because WASAPI loopback taps post-volume / pre-mute, downstream of the whole chain.
+- **Noise gate** (requested): Trent saw AGC boost the noise floor to audible hiss during long silence; a gate BEFORE auto-loudness fixes it. (Promote from Phase C.)
+- **Modularize** (requested): split the large `main.rs` + tidy per the red-team modularity proposals. Do FIRST so features land on a clean base.
+- **Options surface**: a Settings/Options window as the home for the growing option set ("more options for everything").
+- **Red team in flight (S56):** 3 background adversarial reviewers — APO C++ (RT-safety / seqlock read / buffers / numerics), Rust IPC + elevated installer (privilege hygiene / command injection / repr(C) layout parity / ACL scope), GUI (unsafe audio reads / threading / panic=abort panics / modularization proposal). Fold fixes before/with the modularization.
+
 ## PHASE B — workflow killers
 - Global named preset save/load + import/export (serde + serde_json; `C:\ProgramData\TrontEq\presets\*.json`).
 - **Per-output profiles + auto-apply on device switch** (remember settings per endpoint GUID;
