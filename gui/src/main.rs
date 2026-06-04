@@ -18,7 +18,9 @@ mod win;
 use anyhow::Result;
 use eframe::egui;
 use raw_window_handle::HasWindowHandle;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tronteq_shared::{Band, BandKind, Dynamics, DEFAULT_FREQS, NUM_BANDS};
@@ -70,6 +72,7 @@ struct App {
     // Tray (hide-to-tray on close so the control panel stays alive)
     _tray: Option<TrayIcon>,
     app_hwnd: isize,
+    visible: Arc<AtomicBool>, // false while hidden-to-tray -> slow idle repaint
 
     // Output picker
     devices: Vec<devices::Device>,
@@ -144,15 +147,21 @@ impl App {
         }
         let tray = tray_builder.build().ok();
 
+        // Tracks shown vs hidden-to-tray so update() can drop to a slow idle
+        // repaint instead of burning a core at 60fps with no window on screen.
+        let visible = Arc::new(AtomicBool::new(true));
+
         // Tray events fire on the message thread even while the window is hidden;
         // act via raw Win32 (works without the eframe update loop running).
         {
             let c = ctx.clone();
             let show = tray_show_id.clone();
             let quit = tray_quit_id.clone();
+            let v = visible.clone();
             MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
                 if e.id == show {
                     win::show_window(app_hwnd);
+                    v.store(true, Ordering::Relaxed);
                     c.request_repaint();
                 } else if e.id == quit {
                     std::process::exit(0);
@@ -161,6 +170,7 @@ impl App {
         }
         {
             let c = ctx.clone();
+            let v = visible.clone();
             TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
                 // Double-click shows the window. Single/right clicks fall through
                 // so tray-icon can open its context menu (stealing focus here
@@ -171,6 +181,7 @@ impl App {
                 } = e
                 {
                     win::show_window(app_hwnd);
+                    v.store(true, Ordering::Relaxed);
                     c.request_repaint();
                 }
             }));
@@ -195,6 +206,7 @@ impl App {
             about_icon: None,
             _tray: tray,
             app_hwnd,
+            visible,
             devices,
             selected_device,
             apply_rx: None,
@@ -273,6 +285,7 @@ impl eframe::App for App {
         if self._tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             win::hide_window(self.app_hwnd);
+            self.visible.store(false, Ordering::Relaxed);
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -575,8 +588,10 @@ impl eframe::App for App {
 
         about::show(ctx, &mut self.show_about, &mut self.about_icon);
 
-        // Keep redrawing so the spectrum animates + hover effects feel snappy (~60fps).
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        // Repaint fast (~60fps) when visible; drop to a slow idle tick when hidden
+        // to tray so we don't burn a core 24/7 with no window on screen.
+        let interval = if self.visible.load(Ordering::Relaxed) { 16 } else { 1000 };
+        ctx.request_repaint_after(std::time::Duration::from_millis(interval));
     }
 }
 
