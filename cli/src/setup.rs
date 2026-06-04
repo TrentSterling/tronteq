@@ -19,7 +19,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
 use windows::Win32::Security::{
     AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
-    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES, TOKEN_QUERY,
 };
 use windows::Win32::System::Threading::OpenProcessToken;
 use windows::Win32::System::Registry::{
@@ -164,7 +164,7 @@ pub fn unregister_apo() -> Result<()> {
 
 // ---- Privileged FxProperties (EFX slot) write -------------------------------
 
-fn enable_privilege(name: &str) -> Result<()> {
+fn adjust_privilege(name: &str, attributes: TOKEN_PRIVILEGES_ATTRIBUTES) -> Result<()> {
     unsafe {
         let proc = HANDLE(-1isize as *mut core::ffi::c_void); // GetCurrentProcess pseudo-handle
         let mut token = HANDLE::default();
@@ -175,7 +175,7 @@ fn enable_privilege(name: &str) -> Result<()> {
             .with_context(|| format!("LookupPrivilegeValue {name}"))?;
         let tp = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
-            Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }],
+            Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: attributes }],
         };
         let res = AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None)
             .with_context(|| format!("AdjustTokenPrivileges {name}"));
@@ -184,9 +184,38 @@ fn enable_privilege(name: &str) -> Result<()> {
     }
 }
 
+fn enable_privilege(name: &str) -> Result<()> {
+    adjust_privilege(name, SE_PRIVILEGE_ENABLED)
+}
+
+/// Best-effort disable (used by the drop guard). Failing to drop a privilege is
+/// non-fatal but we never want to leave it enabled.
+fn disable_privilege(name: &str) {
+    let _ = adjust_privilege(name, TOKEN_PRIVILEGES_ATTRIBUTES(0));
+}
+
+/// RAII guard: enables SeBackup + SeRestore for one privileged registry op and
+/// disables them on drop, so ACL-bypass is never left live for the rest of the
+/// (elevated) process.
+struct PrivilegeGuard;
+
+impl PrivilegeGuard {
+    fn backup_restore() -> Result<Self> {
+        enable_privilege("SeBackupPrivilege")?;
+        enable_privilege("SeRestorePrivilege")?;
+        Ok(PrivilegeGuard)
+    }
+}
+
+impl Drop for PrivilegeGuard {
+    fn drop(&mut self) {
+        disable_privilege("SeRestorePrivilege");
+        disable_privilege("SeBackupPrivilege");
+    }
+}
+
 fn open_fxproperties(endpoint_reg_guid: &str) -> Result<HKEY> {
-    enable_privilege("SeBackupPrivilege")?;
-    enable_privilege("SeRestorePrivilege")?;
+    // The caller holds a PrivilegeGuard (SeBackup/SeRestore) for the duration.
     let subkey = format!(
         r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{endpoint_reg_guid}\FxProperties"
     );
@@ -201,6 +230,7 @@ fn open_fxproperties(endpoint_reg_guid: &str) -> Result<HKEY> {
 
 /// Point the endpoint's EFX slot at our APO so Windows runs it on that output.
 pub fn set_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
+    let _priv = PrivilegeGuard::backup_restore()?; // dropped (disabled) at fn exit
     let key = open_fxproperties(endpoint_reg_guid)?;
     let res = set_sz(key, EFX_VALUE_NAME, CLSID_STR);
     unsafe { let _ = RegCloseKey(key); }
@@ -209,6 +239,7 @@ pub fn set_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
 
 /// Remove our APO from the endpoint's EFX slot (restore default behavior).
 pub fn clear_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
+    let _priv = PrivilegeGuard::backup_restore()?; // dropped (disabled) at fn exit
     let key = open_fxproperties(endpoint_reg_guid)?;
     let r = unsafe { RegDeleteValueW(key, PCWSTR(wide(EFX_VALUE_NAME).as_ptr())) };
     unsafe { let _ = RegCloseKey(key); }
