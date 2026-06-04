@@ -140,7 +140,9 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::LockForProcess(
 }
 
 HRESULT STDMETHODCALLTYPE TrontEqApo::UnlockForProcess() {
-    m_shared.Close();
+    // Do NOT Close() the shared mapping here: a late APOProcess may still be reading
+    // the view on the RT thread, and unmapping under it = AV inside audiodg (system
+    // audio crash). TryOpen is idempotent; the view is released only in the dtor.
     return CBaseAudioProcessingObject::UnlockForProcess();
 }
 
@@ -176,9 +178,11 @@ void TrontEqApo::ProcessBlockFloat32(float* data, UINT32 frames, UINT32 channels
     for (UINT32 f = 0; f < frames; ++f) {
         for (UINT32 c = 0; c < channels; ++c) {
             float x = data[f * channels + c] * preGain; // preamp at head of chain
+            if (!std::isfinite(x)) x = 0.0f; // keep NaN/Inf out of the biquad state
             for (std::size_t b = 0; b < kNumBands; ++b) {
                 x = ProcessSample(m_coeffs[b], m_state[c][b], x);
             }
+            if (!std::isfinite(x)) x = 0.0f; // a poisoned biquad must not reach the DAC
             data[f * channels + c] = x;
         }
     }
@@ -195,6 +199,10 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     UNREFERENCED_PARAMETER(u32NumInputConnections);
     UNREFERENCED_PARAMETER(u32NumOutputConnections);
 
+    // MXCSR is per-thread; set denormal flush on the actual RT mixer thread
+    // (LockForProcess may run on a different thread, so its call isn't enough).
+    EnableDenormalFlushing();
+
     if (!ppInputConnections || !ppOutputConnections ||
         !ppInputConnections[0] || !ppOutputConnections[0]) {
         return;
@@ -203,7 +211,9 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     APO_CONNECTION_PROPERTY* in = ppInputConnections[0];
     APO_CONNECTION_PROPERTY* out = ppOutputConnections[0];
 
-    // Refresh shared state. We're APO_FLAG_INPLACE so buffer pointers alias.
+    // Refresh cached params from the shared mmap (opened in LockForProcess). NEVER
+    // open files or log here — any file I/O / syscall on the RT mixer thread
+    // glitches all system audio.
     if (m_shared.IsOpen()) {
         EqState tmp;
         if (m_shared.Read(tmp)) {
@@ -214,19 +224,6 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
             m_cached.bypass = tmp.bypass;
             m_cached.dynamics = tmp.dynamics;
         }
-    } else {
-        m_shared.TryOpen();
-    }
-
-    if (!m_loggedProcess) {
-        char buf[176];
-        sprintf_s(buf,
-                  "APOProcess#1 sharedOpen=%d bypass=%u b0gain=%.1f b3gain=%.1f flags=%u frames=%u ch=%u",
-                  m_shared.IsOpen() ? 1 : 0, m_cached.bypass,
-                  m_cached.bands[0].gain, m_cached.bands[3].gain,
-                  in->u32BufferFlags, in->u32ValidFrameCount, m_channels);
-        ApoLog(buf);
-        m_loggedProcess = true;
     }
 
     out->u32ValidFrameCount = in->u32ValidFrameCount;
@@ -234,11 +231,17 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
 
     float* inBuf  = reinterpret_cast<float*>(in->pBuffer);
     float* outBuf = reinterpret_cast<float*>(out->pBuffer);
+    if (!inBuf || !outBuf) return;
     const std::size_t sampleCount =
         static_cast<std::size_t>(in->u32ValidFrameCount) * m_channels;
 
     if (in->u32BufferFlags == BUFFER_SILENT) {
-        return; // output is flagged silent; the engine ignores buffer contents
+        // Separate in/out buffers at the EFX stage: zero the output so a consumer
+        // that ignores the silent flag can't play stale scratch.
+        if (outBuf != inBuf) {
+            std::memset(outBuf, 0, sampleCount * sizeof(float));
+        }
+        return;
     }
 
     // APO_FLAG_INPLACE is only a request — at the endpoint (EFX) stage the engine
@@ -253,9 +256,11 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     }
 
     RecomputeCoeffsIfDirty(m_cached.bands);
-    const float preGain = m_cached.preamp_db != 0.0f
-        ? std::pow(10.0f, m_cached.preamp_db / 20.0f)
-        : 1.0f;
+    // Clamp preamp defensively: the shared file is POD a hostile process could
+    // fill with inf/NaN -> inf gain -> NaN audio blast.
+    float preampDb = std::isfinite(m_cached.preamp_db) ? m_cached.preamp_db : 0.0f;
+    preampDb = (std::max)(-24.0f, (std::min)(24.0f, preampDb));
+    const float preGain = preampDb != 0.0f ? std::pow(10.0f, preampDb / 20.0f) : 1.0f;
     ProcessBlockFloat32(outBuf, in->u32ValidFrameCount, m_channels, preGain);
 
     // Dynamics: AGC -> compressor -> limiter (each gated by its own enable).
