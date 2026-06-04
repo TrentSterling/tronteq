@@ -25,7 +25,31 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tronteq_shared::{Band, BandKind, Dynamics, DEFAULT_FREQS, NUM_BANDS};
 
+/// Write any Rust panic to a crash log before `panic = "abort"` kills us. The GUI
+/// runs on the windows subsystem (no console), so without this a panic vanishes
+/// as a bare 0xc0000409 in the Event Log with no message or location. The hook is
+/// global (fires for any thread, incl. the WASAPI capture thread), and the process
+/// is elevated, so it can append into ProgramData.
+fn install_crash_logger() {
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let line = format!("[{ts}] {info}\n");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(r"C:\ProgramData\TrontEq\crash.log")
+        {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }));
+}
+
 fn main() -> Result<()> {
+    install_crash_logger();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("TrontEQ")
         .with_inner_size([1000.0, 460.0])
