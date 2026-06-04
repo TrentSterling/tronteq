@@ -45,7 +45,7 @@ pub enum TestSigningState {
 /// Parse `bcdedit /enum {current}` output. Returns On if the `testsigning`
 /// line contains `Yes`.
 pub fn test_signing_state() -> Result<TestSigningState> {
-    let out = Command::new("bcdedit.exe")
+    let out = Command::new(crate::setup::system32("bcdedit.exe"))
         .args(["/enum", "{current}"])
         .output();
     let out = match out {

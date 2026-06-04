@@ -49,13 +49,39 @@ fn wide_bytes(s: &str) -> Vec<u8> {
     b
 }
 
+/// Resolve a system tool to its absolute `System32` path. An elevated process
+/// must never invoke `icacls`/`net`/`schtasks`/`bcdedit` by bare name — a planted
+/// binary on PATH (or in the CWD) would then run with our privileges.
+pub(crate) fn system32(exe: &str) -> String {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    format!(r"{root}\System32\{exe}")
+}
+
+/// `true` only for a canonical braced GUID `{8-4-4-4-12}` of hex digits.
+fn is_canonical_guid(braced: &str) -> bool {
+    let b = braced.as_bytes();
+    if b.len() != 38 || b[0] != b'{' || b[37] != b'}' {
+        return false;
+    }
+    braced[1..37].bytes().enumerate().all(|(i, c)| {
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            c == b'-'
+        } else {
+            c.is_ascii_hexdigit()
+        }
+    })
+}
+
 /// Derive the registry endpoint key name from an MMDevice id. The id looks like
 /// `{0.0.0.00000000}.{76af72a1-...}`; the registry key is the trailing GUID.
 pub fn endpoint_reg_guid(device_id: &str) -> Result<String> {
+    // Strict canonical-GUID check: this string is concatenated into an HKLM key
+    // path opened with SeRestore, so a non-GUID (e.g. containing `\..\`) must be
+    // rejected to prevent registry path traversal.
     let guid = device_id
         .rsplit_once('.')
         .map(|(_, g)| g)
-        .filter(|g| g.starts_with('{') && g.ends_with('}'))
+        .filter(|g| is_canonical_guid(g))
         .with_context(|| format!("unexpected endpoint id format: {device_id}"))?;
     Ok(guid.to_string())
 }
@@ -197,8 +223,9 @@ pub fn clear_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
 
 /// Grant the restricted audiodg token read access to the settings dir.
 pub fn grant_programdata_acl(dir: &str) -> Result<()> {
+    let icacls = system32("icacls.exe");
     // ALL APPLICATION PACKAGES, ALL RESTRICTED APPLICATION PACKAGES, LOCAL SERVICE.
-    let status = Command::new("icacls")
+    let status = Command::new(&icacls)
         .args([
             dir,
             "/grant",
@@ -215,18 +242,35 @@ pub fn grant_programdata_acl(dir: &str) -> Result<()> {
     if !status.success() {
         bail!("icacls failed: {:?}", status);
     }
+
+    // The dir grant above inherits read to EVERY file, which would expose the dev
+    // signing cert (dev-cert.pfx) to all app packages. Break inheritance on it and
+    // grant only Administrators + SYSTEM so the cert stays private.
+    let cert = format!(r"{dir}\dev-cert.pfx");
+    if std::path::Path::new(&cert).exists() {
+        let _ = Command::new(&icacls)
+            .args([
+                cert.as_str(),
+                "/inheritance:r",
+                "/grant",
+                "*S-1-5-32-544:(F)", // Administrators
+                "/grant",
+                "*S-1-5-18:(F)", // SYSTEM
+            ])
+            .status();
+    }
     Ok(())
 }
 
 pub fn stop_audio() -> Result<()> {
-    let _ = Command::new("net").args(["stop", "audiosrv", "/y"]).status();
+    let _ = Command::new(system32("net.exe")).args(["stop", "audiosrv", "/y"]).status();
     Ok(())
 }
 
 pub fn start_audio() -> Result<()> {
     // audiosrv has dependent services; `net start` starts it, the deps come back
     // with it. Best-effort.
-    let _ = Command::new("net").args(["start", "audiosrv"]).status();
+    let _ = Command::new(system32("net.exe")).args(["start", "audiosrv"]).status();
     Ok(())
 }
 
@@ -244,7 +288,7 @@ fn gui_exe_path() -> Result<String> {
 /// highest privileges from a logon task means no UAC prompt.
 pub fn register_autostart() -> Result<()> {
     let exe = gui_exe_path()?;
-    let status = Command::new("schtasks")
+    let status = Command::new(system32("schtasks.exe"))
         .args([
             "/create", "/tn", "TrontEQ", "/tr", &exe, "/sc", "onlogon", "/rl", "HIGHEST", "/f",
         ])
@@ -257,7 +301,7 @@ pub fn register_autostart() -> Result<()> {
 }
 
 pub fn unregister_autostart() -> Result<()> {
-    let _ = Command::new("schtasks")
+    let _ = Command::new(system32("schtasks.exe"))
         .args(["/delete", "/tn", "TrontEQ", "/f"])
         .status();
     Ok(())
@@ -279,5 +323,14 @@ mod tests {
     #[test]
     fn rejects_malformed_id() {
         assert!(endpoint_reg_guid("garbage").is_err());
+    }
+
+    #[test]
+    fn rejects_noncanonical_guid() {
+        // Brace-wrapped but not a canonical GUID -> rejected (registry path traversal).
+        assert!(endpoint_reg_guid(r"{0.0.0.00000000}.{a}\..\..\Evil").is_err());
+        assert!(endpoint_reg_guid("{0.0.0.00000000}.{not-a-guid}").is_err());
+        assert!(is_canonical_guid("{76af72a1-a1af-42f8-88ea-7f5023c6e269}"));
+        assert!(!is_canonical_guid("{76af72a1-a1af-42f8-88ea-7f5023c6e26}")); // too short
     }
 }
