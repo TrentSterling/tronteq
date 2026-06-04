@@ -10,28 +10,6 @@
 
 namespace tronteq {
 
-// Diagnostics. audiodg.exe is a protected Session-0 process, so OutputDebugString
-// is awkward to capture; we also append to a file we can read directly. The file
-// write needs the install dir to grant the audiodg token write access.
-static void ApoLog(const char* msg) {
-    OutputDebugStringA("[TrontEqApo] ");
-    OutputDebugStringA(msg);
-    OutputDebugStringA("\n");
-
-    HANDLE h = CreateFileW(L"C:\\ProgramData\\TrontEq\\apo.log",
-                           FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h != INVALID_HANDLE_VALUE) {
-        char line[360];
-        int n = _snprintf_s(line, sizeof(line), _TRUNCATE, "%s\r\n", msg);
-        if (n > 0) {
-            DWORD written = 0;
-            WriteFile(h, line, static_cast<DWORD>(n), &written, nullptr);
-        }
-        CloseHandle(h);
-    }
-}
-
 // {9D8C1A32-4F6E-4D21-9A77-21550C338801} — see Guids.h. Concrete storage so it
 // can be returned from GetEffectsList.
 static const GUID kTrontEqEffectId =
@@ -55,7 +33,6 @@ static const CRegAPOProperties<1> s_regProps(
 TrontEqApo::TrontEqApo()
     : CBaseAudioProcessingObject(s_regProps)
 {
-    ApoLog("ctor: audiodg created an instance");
     for (std::size_t i = 0; i < kNumBands; ++i) {
         m_coeffs[i] = Identity();
         m_coeffBands[i] = Band{0.0f, 0.0f, 1.0f, 0};
@@ -73,17 +50,14 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::Initialize(UINT32 cbDataSize, BYTE* pbyDat
     // Let the base do its generic setup, but never reject: the engine hands us
     // an APOInitSystemEffects/2/3 blob we don't need (our params come from the
     // shared state file), and rejecting it would stop audiodg loading us.
-    HRESULT hr = CBaseAudioProcessingObject::Initialize(cbDataSize, pbyData);
-    char buf[96];
-    sprintf_s(buf, "Initialize cb=%u baseHr=0x%08X", cbDataSize, static_cast<unsigned>(hr));
-    ApoLog(buf);
+    // Run the base setup for its side effects; never reject (S_OK regardless).
+    (void)CBaseAudioProcessingObject::Initialize(cbDataSize, pbyData);
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE TrontEqApo::GetEffectsList(
     LPGUID* ppEffectsIds, UINT* pcEffects, HANDLE /*Event*/)
 {
-    ApoLog("GetEffectsList");
     if (!ppEffectsIds || !pcEffects) return E_POINTER;
 
     // We don't signal effect-list changes (single static effect), so the Event
@@ -129,12 +103,8 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::LockForProcess(
     m_coeffsReady = false;
     m_dynamics.Reset(static_cast<double>(m_framesPerSecond > 0 ? m_framesPerSecond : 48000));
 
-    m_shared.TryOpen(); // OK if absent; reopen attempts happen on each buffer
+    m_shared.TryOpen(); // open the shared-state mapping now; no per-buffer reopen
 
-    char buf[128];
-    sprintf_s(buf, "LockForProcess ch=%u fs=%u sharedOpen=%d",
-              m_channels, m_framesPerSecond, m_shared.IsOpen() ? 1 : 0);
-    ApoLog(buf);
     return S_OK;
 }
 
