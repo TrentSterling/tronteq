@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
 mod curve;
 mod devices;
 mod dsp_preview;
@@ -12,6 +13,7 @@ mod spectrogram;
 mod state_writer;
 mod theme;
 mod visualizer;
+mod win;
 
 use anyhow::Result;
 use eframe::egui;
@@ -150,7 +152,7 @@ impl App {
             let quit = tray_quit_id.clone();
             MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
                 if e.id == show {
-                    show_window(app_hwnd);
+                    win::show_window(app_hwnd);
                     c.request_repaint();
                 } else if e.id == quit {
                     std::process::exit(0);
@@ -168,7 +170,7 @@ impl App {
                     ..
                 } = e
                 {
-                    show_window(app_hwnd);
+                    win::show_window(app_hwnd);
                     c.request_repaint();
                 }
             }));
@@ -270,7 +272,7 @@ impl eframe::App for App {
         // Only if a tray exists, else we'd trap the window with no way back.
         if self._tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            hide_window(self.app_hwnd);
+            win::hide_window(self.app_hwnd);
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -571,121 +573,7 @@ impl eframe::App for App {
             }
         });
 
-        // About window.
-        let mut about_open = self.show_about;
-        if about_open {
-            // Lazy-load the eyepatch face/icon texture on first open.
-            if self.about_icon.is_none() {
-                if let Ok(img) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
-                    let color = egui::ColorImage::from_rgba_unmultiplied(
-                        [img.width as usize, img.height as usize],
-                        &img.rgba,
-                    );
-                    self.about_icon =
-                        Some(ctx.load_texture("tronteq-about", color, egui::TextureOptions::LINEAR));
-                }
-            }
-            let icon = self.about_icon.clone();
-            let mut close_about = false;
-            egui::Window::new("About TrontEQ")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .open(&mut about_open)
-                .show(ctx, |ui| {
-                    ui.set_max_width(380.0);
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(6.0);
-                        if let Some(tex) = &icon {
-                            ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                                tex.id(),
-                                egui::vec2(76.0, 76.0),
-                            )));
-                            ui.add_space(8.0);
-                        }
-                        ui.label(
-                            egui::RichText::new("TrontEQ")
-                                .family(egui::FontFamily::Name("display".into()))
-                                .color(theme::cyan())
-                                .strong()
-                                .size(30.0),
-                        );
-                        ui.label(
-                            egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(theme::muted()),
-                        );
-                        ui.add_space(8.0);
-                        ui.label("Zero-latency Windows system EQ + dynamics");
-                        ui.label(
-                            egui::RichText::new(
-                                "Runs as a real Audio Processing Object inside the Windows audio \
-                                 engine, so it adds no latency to your sound.",
-                            )
-                            .color(theme::muted())
-                            .small(),
-                        );
-                        ui.add_space(10.0);
-                    });
-
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("SIGNAL CHAIN").color(theme::cyan()).strong());
-                    ui.label(
-                        egui::RichText::new("Preamp  >  8-band EQ  >  Compressor  >  Limiter  >  Auto-loudness")
-                            .color(theme::muted())
-                            .small(),
-                    );
-                    ui.add_space(10.0);
-
-                    ui.label(egui::RichText::new("CONTROLS").color(theme::cyan()).strong());
-                    ui.add_space(2.0);
-                    egui::Grid::new("about_controls")
-                        .num_columns(2)
-                        .spacing([18.0, 5.0])
-                        .show(ui, |ui| {
-                            let mut row = |a: &str, b: &str| {
-                                ui.label(egui::RichText::new(a).color(theme::text()));
-                                ui.label(egui::RichText::new(b).color(theme::muted()));
-                                ui.end_row();
-                            };
-                            row("Drag node", "Gain");
-                            row("Shift-drag / scroll", "Q / bandwidth");
-                            row("Ctrl + drag", "Frequency");
-                            row("Double-click node", "Flatten band");
-                            row("Right-click node", "Cycle filter type");
-                            row("Drag / scroll knob", "Adjust value");
-                            row("Viz toggles", "Stack any overlays");
-                        });
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    ui.vertical_centered(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.hyperlink_to("tront.xyz", "https://tront.xyz");
-                            ui.label(egui::RichText::new("·").color(theme::muted()));
-                            ui.hyperlink_to("GitHub", "https://github.com/TrentSterling");
-                            ui.label(egui::RichText::new("·").color(theme::muted()));
-                            ui.hyperlink_to("Discord", "https://tront.xyz/discord/");
-                        });
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("by Trent Sterling  ·  free + open source")
-                                .color(theme::muted())
-                                .small(),
-                        );
-                        ui.label(egui::RichText::new("Built with Rust + egui").color(theme::muted()).small());
-                        ui.add_space(8.0);
-                        if ui.button("Close").clicked() {
-                            close_about = true;
-                        }
-                        ui.add_space(2.0);
-                    });
-                });
-            if close_about {
-                about_open = false;
-            }
-        }
-        self.show_about = about_open;
+        about::show(ctx, &mut self.show_about, &mut self.about_icon);
 
         // Keep redrawing so the spectrum animates + hover effects feel snappy (~60fps).
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -720,32 +608,3 @@ fn out_meter(ui: &mut egui::Ui, rms: f32, peak: f32) {
     );
 }
 
-/// Restore + show + focus the window (raw Win32 — eframe's Visible can't restore
-/// a hidden window). Pattern proven in trontclicker / powershellmanager.
-fn show_window(hwnd: isize) {
-    if hwnd == 0 {
-        return;
-    }
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
-    };
-    unsafe {
-        let h = HWND(hwnd as *mut _);
-        let _ = ShowWindow(h, SW_RESTORE);
-        let _ = ShowWindow(h, SW_SHOW);
-        let _ = SetForegroundWindow(h);
-    }
-}
-
-/// Hide the window entirely (no taskbar button — true tray).
-fn hide_window(hwnd: isize) {
-    if hwnd == 0 {
-        return;
-    }
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-    unsafe {
-        let _ = ShowWindow(HWND(hwnd as *mut _), SW_HIDE);
-    }
-}
