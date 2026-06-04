@@ -1,13 +1,12 @@
 //! IPC contract between the Rust GUI and the C++ APO.
 //!
-//! Lives as a 144-byte file at `C:\ProgramData\TrontEq\state.bin`.
+//! Lives as a 192-byte file at `C:\ProgramData\TrontEq\state.bin`.
 //! Both processes `CreateFileMapping` the same file, `MapViewOfFile`,
 //! and read/write the shared struct using a seqlock on `version`.
 
 #![allow(clippy::missing_safety_doc)]
 
 use std::fs::OpenOptions;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::{MmapMut, MmapOptions};
@@ -165,12 +164,17 @@ impl StateHandle {
     /// Create or open the state file. If empty, initialize with a flat default.
     pub fn open_or_init() -> anyhow::Result<Self> {
         std::fs::create_dir_all(STATE_DIR)?;
-        let path = PathBuf::from(STATE_FILE);
+        Self::open_at(std::path::Path::new(STATE_FILE))
+    }
+
+    /// Open or create a state file at an arbitrary path. `open_or_init` uses the
+    /// real `STATE_FILE`; tests pass a temp path so they never touch system state.
+    pub fn open_at(path: &std::path::Path) -> anyhow::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)?;
+            .open(path)?;
         let meta = file.metadata()?;
         if meta.len() == 0 {
             file.set_len(STATE_BYTES as u64)?;
@@ -272,4 +276,107 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub fn is_bypassed(&self) -> bool { self.bypass != 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_matches_abi() {
+        // Mirrored byte-for-byte in apo/src/EqState.h.
+        assert_eq!(std::mem::size_of::<EqState>(), STATE_BYTES);
+        assert_eq!(std::mem::align_of::<EqState>(), 8);
+        assert_eq!(std::mem::size_of::<Band>(), 16);
+        assert_eq!(std::mem::size_of::<Dynamics>(), 48);
+    }
+
+    #[test]
+    fn bandkind_cycle_and_parse() {
+        let mut k = BandKind::Peak;
+        for _ in 0..8 {
+            k = k.next();
+        }
+        assert_eq!(k, BandKind::Peak); // full cycle returns to start
+        assert_eq!(BandKind::from_u32(99), BandKind::Peak); // out-of-range -> Peak
+        assert_eq!(BandKind::from_u32(6), BandKind::Notch);
+    }
+
+    #[test]
+    fn defaults_are_sane() {
+        let d = Dynamics::default_passive();
+        assert_eq!(d.comp_enabled, 0);
+        assert_eq!(d.limiter_enabled, 1); // limiter on by default (clip safety)
+        assert_eq!(d.agc_enabled, 0);
+        let b = Band::flat(1000.0);
+        assert_eq!(b.gain, 0.0);
+        assert_eq!(b.kind, BandKind::Peak as u32);
+    }
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("tronteq_test_{name}.bin"));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn fresh_file_inits_to_flat_default() {
+        let p = temp_path("init");
+        let h = StateHandle::open_at(&p).unwrap();
+        let s = h.snapshot();
+        assert_eq!(s.version, 2); // committed init
+        assert_eq!(s.bypass, 0);
+        assert_eq!(s.bands[0].freq, DEFAULT_FREQS[0]);
+        assert_eq!(s.bands[7].freq, DEFAULT_FREQS[7]);
+        assert_eq!(s.dynamics.limiter_enabled, 1);
+        drop(h);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn seqlock_roundtrip() {
+        let p = temp_path("roundtrip");
+        let h = StateHandle::open_at(&p).unwrap();
+        let v0 = h.snapshot().version;
+
+        let mut bands = [Band::flat(0.0); NUM_BANDS];
+        bands[2].gain = 6.5;
+        bands[2].kind = BandKind::Notch as u32;
+        let mut dynamics = Dynamics::default_passive();
+        dynamics.comp_enabled = 1;
+        dynamics.comp_makeup_db = 4.0;
+
+        h.write(|w| {
+            w.set_bands(&bands);
+            w.set_preamp(-3.0);
+            w.set_bypass(true);
+            w.set_dynamics(&dynamics);
+        });
+
+        let s = h.snapshot();
+        assert!(s.version > v0 && s.version % 2 == 0); // committed (even), advanced
+        assert_eq!(s.bands[2].gain, 6.5);
+        assert_eq!(s.bands[2].kind, BandKind::Notch as u32);
+        assert_eq!(s.preamp_db, -3.0);
+        assert!(s.is_bypassed());
+        assert_eq!(s.dynamics.comp_enabled, 1);
+        assert_eq!(s.dynamics.comp_makeup_db, 4.0);
+        drop(h);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn reopen_preserves_state() {
+        let p = temp_path("reopen");
+        {
+            let h = StateHandle::open_at(&p).unwrap();
+            h.write(|w| w.set_preamp(7.5));
+        }
+        // Reopen the same file: a non-zero committed version must NOT re-init to flat.
+        let h2 = StateHandle::open_at(&p).unwrap();
+        assert_eq!(h2.snapshot().preamp_db, 7.5);
+        drop(h2);
+        let _ = std::fs::remove_file(&p);
+    }
 }
