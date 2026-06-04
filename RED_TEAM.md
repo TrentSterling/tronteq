@@ -81,3 +81,25 @@ Status key: ✅ fixed+shipped · ⏳ open
 ## Doc rot
 - `CLAUDE.md` IPC section + `EqState.h` line-2 comment say "144 bytes" / omit `dynamics`+`preamp_db`;
   the real contract is 192 bytes (code agrees with itself via static asserts). Update the docs.
+
+---
+
+## Re-review pass 4 (S56) — verify fixes + new findings
+Two adversarial re-reviewers verified passes 1-3:
+- ✅ APO FTZ-on-RT-thread, use-after-unmap (Close in dtor only), silent memset, preamp+NaN sanitize — CORRECT.
+- ✅ CLI System32 paths, cert ACL lockdown (verified it does NOT self-DoS the installer — Admins is a group grant), canonical-GUID validation — CORRECT.
+- ✅ GUI modularization (about.rs / win.rs) — behavior-preserving, all call sites updated, no dead code.
+- ⬇️ shared `open_or_init` init race: re-review proved it's actually SAFE (version stays 0 during the fill, published as 2 after; the C++ `v1 != 0` guard holds; no torn read). Downgraded CRITICAL → LOW (latent panic-safety on `write()` only, not reachable with the current POD-store closures).
+
+**Fixed this pass:**
+- ✅ `Biquad.cpp ComputeBiquad`: clamp gain [-48,48] + reject non-finite coeffs → Identity (was unclamped gain → Inf/NaN coeffs).
+- ✅ `TrontEqApo.cpp`: clamp ALL dynamics params to sane ranges before `Process` + a final `isfinite`/[-4,4] sanitize over the output buffer after the whole chain. Closes the NEW blast vector the re-review found: a finite-but-huge `comp_makeup_db` / `agc_max_gain_db` bypassed every prior guard because dynamics runs AFTER the EQ-stage sanitize.
+
+**Top remaining (re-scored), next runs:**
+- ⏳ HIGH GUI: `request_repaint_after(16ms)` fires even hidden-to-tray → burns a core 24/7. Gate on a `visible` flag toggled in the tray show/hide handlers. (NEXT)
+- ⏳ HIGH CLI: SeBackup/SeRestore enabled in `open_fxproperties`, never disabled (ACL-bypass live). RAII drop guard.
+- ⏳ MED APO: >8ch stride clamp (`min(ch,8)`) scrambles 7.1.4/Atmos and the new memcpy/memset truncate the tail. Reject >8ch in `LockForProcess` (cleanest) or raise `kMaxChannels`.
+- ⏳ MED APO: reopen recovery gap — if `state.bin` appears after `LockForProcess`, the APO stays pass-through until re-lock. Add a throttled reopen (every ~1024 buffers while absent), still off the per-buffer path.
+- ⏳ MED CLI: dir grant still `(OI)(CI)(RX) /T` container-wide (cert carved out, but new files inherit) — scope to `state.bin`; uninstall enum-failure prints `[ok]`; `AdjustTokenPrivileges` `ERROR_NOT_ALL_ASSIGNED` unchecked; cert password hardcoded.
+- ⏳ MED GUI perf: spectrogram re-uploads the full texture every frame; tray Quit `process::exit(0)` skips Drop (leaks the capture thread).
+- ⏳ LOW doc rot: `apo/src/EqState.h:2` + `CLAUDE.md` still say "144 bytes".

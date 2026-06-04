@@ -16,7 +16,12 @@ BiquadCoeffs ComputeBiquad(const Band& band, double sample_rate) {
         return Identity();
     }
 
-    const double A = std::pow(10.0, static_cast<double>(band.gain) / 40.0);
+    // Clamp gain defensively (POD from a possibly-hostile shared file): a huge
+    // value would make A = +Inf -> Inf/NaN coefficients -> NaN audio.
+    const float gainDb = std::isfinite(band.gain)
+        ? ((band.gain < -48.0f) ? -48.0f : ((band.gain > 48.0f) ? 48.0f : band.gain))
+        : 0.0f;
+    const double A = std::pow(10.0, static_cast<double>(gainDb) / 40.0);
     const double w0 = 2.0 * kPi * static_cast<double>(band.freq) / sample_rate;
     const double cos_w0 = std::cos(w0);
     const double sin_w0 = std::sin(w0);
@@ -115,6 +120,12 @@ BiquadCoeffs ComputeBiquad(const Band& band, double sample_rate) {
     out.b2 = b2 / a0;
     out.a1 = a1 / a0;
     out.a2 = a2 / a0;
+    // Reject any non-finite coefficient -> pass-through, so a poisoned param set
+    // can't feed NaN into the DF-II-T state (which would wedge the channel).
+    if (!std::isfinite(out.b0) || !std::isfinite(out.b1) || !std::isfinite(out.b2) ||
+        !std::isfinite(out.a1) || !std::isfinite(out.a2)) {
+        return Identity();
+    }
     return out;
 }
 

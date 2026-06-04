@@ -263,8 +263,38 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     const float preGain = preampDb != 0.0f ? std::pow(10.0f, preampDb / 20.0f) : 1.0f;
     ProcessBlockFloat32(outBuf, in->u32ValidFrameCount, m_channels, preGain);
 
-    // Dynamics: AGC -> compressor -> limiter (each gated by its own enable).
-    m_dynamics.Process(outBuf, in->u32ValidFrameCount, m_channels, m_cached.dynamics);
+    // Dynamics: AGC -> compressor -> limiter. Clamp params first — they're POD from
+    // the shared file and a finite-but-huge makeup/gain would otherwise make +Inf
+    // gain (the EQ-stage sanitize runs before this stage, not after).
+    Dynamics dyn = m_cached.dynamics;
+    auto clampf = [](float v, float lo, float hi, float def) -> float {
+        if (!std::isfinite(v)) return def;
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    dyn.comp_threshold_db = clampf(dyn.comp_threshold_db, -80.0f, 0.0f, -18.0f);
+    dyn.comp_ratio = clampf(dyn.comp_ratio, 1.0f, 100.0f, 2.0f);
+    dyn.comp_attack_ms = clampf(dyn.comp_attack_ms, 0.1f, 500.0f, 10.0f);
+    dyn.comp_release_ms = clampf(dyn.comp_release_ms, 1.0f, 5000.0f, 120.0f);
+    dyn.comp_knee_db = clampf(dyn.comp_knee_db, 0.0f, 24.0f, 6.0f);
+    dyn.comp_makeup_db = clampf(dyn.comp_makeup_db, 0.0f, 48.0f, 0.0f);
+    dyn.limiter_ceiling_db = clampf(dyn.limiter_ceiling_db, -24.0f, 0.0f, -0.3f);
+    dyn.agc_target_db = clampf(dyn.agc_target_db, -60.0f, 0.0f, -16.0f);
+    dyn.agc_max_gain_db = clampf(dyn.agc_max_gain_db, 0.0f, 48.0f, 18.0f);
+    m_dynamics.Process(outBuf, in->u32ValidFrameCount, m_channels, dyn);
+
+    // Final safety net: nothing reaches the DAC non-finite or past a hard ceiling,
+    // regardless of params or a poisoned biquad state.
+    for (std::size_t i = 0; i < sampleCount; ++i) {
+        float v = outBuf[i];
+        if (!std::isfinite(v)) {
+            v = 0.0f;
+        } else if (v > 4.0f) {
+            v = 4.0f;
+        } else if (v < -4.0f) {
+            v = -4.0f;
+        }
+        outBuf[i] = v;
+    }
 }
 
 } // namespace tronteq
