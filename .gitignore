@@ -1,0 +1,12 @@
+target/
+apo/build/
+SAMPLES/
+*.pfx
+*.cer
+state.bin
+Cargo.lock
+
+# scratch / logs
+*.log
+killlog.txt
+tmp_*.png

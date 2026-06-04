@@ -1,0 +1,98 @@
+# CLAUDE.md — TrontEQ
+
+Zero-latency Windows system EQ. Our own Audio Processing Object plus a Rust eframe GUI that drives it through a memory-mapped state file.
+
+## Architecture
+
+Three artifacts. One IPC file.
+
+```
+ Rust GUI (tronteq.exe)  ──writes──▶  C:\ProgramData\TrontEq\state.bin
+                                              ▲
+                                              │ reads every buffer (seqlock)
+                                              │
+ tronteq-cli.exe                       TrontEqApo.dll
+   ├─ sign                              (loaded by audiodg.exe)
+   ├─ register CLSID                     ├─ 8-band biquad cascade
+   ├─ assign PKEY_FX_StreamEffectClsid   ├─ RBJ peak/lowshelf/highshelf
+   └─ uninstall                          └─ DF-II-T, FTZ+DAZ, zero latency
+```
+
+**Zero added latency.** APOs run inline in the Windows audio graph. The only cost is the biquad math itself (~48 muls + 40 adds per sample for 8 bands = negligible at 48 kHz).
+
+## Components
+
+| Path | Role |
+|---|---|
+| `apo/` | C++ COM DLL (`TrontEqApo.dll`). Subclasses `CBaseAudioProcessingObject`. RBJ biquads, DF-II-T, FTZ/DAZ. Reads `EqState` from file-backed mmap. |
+| `cli/` | Rust installer. `check` / `list-devices` / `install --device` / `uninstall`. Uses `windows` crate for `IMMDeviceEnumerator` + `IPropertyStore`. |
+| `gui/` | Rust eframe app. Draggable 8-band curve (`ui.painter()`), composite response preview, flat + bypass buttons. Writes the state file. |
+| `shared/` | Rust crate. `#[repr(C)] EqState` — the IPC contract. 144 bytes. Mirrored in `apo/src/EqState.h`. |
+
+## IPC Contract
+
+File: `C:\ProgramData\TrontEq\state.bin` (144 bytes, file-backed memory map).
+
+```
+EqState {
+  version:    AtomicU64     // offset 0, 8 bytes. Seqlock counter.
+  bands[8]:   Band          // offset 8, 128 bytes
+  bass_boost: f32           // offset 136, 4 bytes (unused in POC; reserved)
+  bypass:     u8            // offset 140, 1 byte
+  _pad:       [u8; 3]       // offset 141..=143
+}
+
+Band {
+  freq: f32     // Hz
+  gain: f32     // dB
+  q:    f32     // dimensionless
+  kind: u32     // 0=Peak, 1=LowShelf, 2=HighShelf
+}
+```
+
+**Seqlock protocol:** Writer does `version++` (odd → in-progress), writes bands, `version++` (even → committed). Reader loads version, copies bands, re-loads version; if both reads equal and even, use the bands.
+
+**Why file-backed and not `Local\`/`Global\`**: `audiodg.exe` runs in Session 0 (services), GUI runs in the user session. `Local\*` names don't cross sessions. `Global\*` requires `SeCreateGlobalPrivilege` the GUI doesn't have. A file-backed mapping bridges sessions cleanly.
+
+## Build
+
+```bash
+# Rust
+cd C:\trontstack\tronteq
+cargo build --release --workspace
+
+# C++ APO
+cd apo
+build.bat
+```
+
+`apo/build.bat` shells through `vcvars64.bat` (VS 2022 Community) then runs `cl` + `link` against Windows SDK 10.0.26100 headers. Output: `apo/build/TrontEqApo.dll`.
+
+## One-time dev setup
+
+Test-signing must be ON (audiodg refuses unsigned APOs). Self-signed cert must be trusted. See `README.md` for the one-shot PowerShell commands.
+
+## CLSID
+
+`{CA64E60A-A3C4-43B8-970F-0360055172F2}` — generated once via `[guid]::NewGuid()`, hard-coded in both `apo/src/Guids.h` and `cli/src/com_reg.rs`. Never regenerate.
+
+## Design Decisions
+
+- **APO flags:** `APO_FLAG_INPLACE | APO_FLAG_SAMPLESPERFRAME_MUST_MATCH | APO_FLAG_FRAMESPERSECOND_MUST_MATCH`. In-place means one buffer pointer, no extra allocation.
+- **Audio format:** `KSDATAFORMAT_SUBTYPE_IEEE_FLOAT`, 32-bit float, any channel count, any sample rate. Windows engine converts into/out-of this format for us.
+- **Lock-free coefficient updates:** Seqlock on the `version` counter. No mutex in `APOProcess`.
+- **Denormals:** `_mm_setcsr(_mm_getcsr() | _MM_FLUSH_ZERO_ON | _MM_DENORMALS_ZERO_ON)` in `APOInitialize`.
+- **Biquad form:** Direct Form II Transposed. Best FP stability for boosted/cut peaks.
+- **RBJ cookbook:** canonical coefficients for Peak / LowShelf / HighShelf. That's all we implement in POC.
+- **Filter recompute only when bands change.** Dirty-flag check at buffer start; skip RBJ math 99% of the time.
+
+## Non-Goals (POC)
+
+Spectrum analyzer overlay · preset save/load · bass-boost one-button · per-app EQ · INF-packaged installer · multi-device simultaneous processing · bass_boost field wiring. Listed in the plan as future milestones.
+
+## Reference Projects (SAMPLES/, gitignored)
+
+- `microsoft/Windows-driver-samples` audio/sysvad/APO/SwapAPO — APO scaffolding reference
+- Equalizer APO — per-user registry + endpoint PropertyStore install pattern
+- EasyEffects — drawable-curve UX inspiration
+- RBJ Audio-EQ-Cookbook text — biquad coefficient math

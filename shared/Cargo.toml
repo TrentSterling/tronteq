@@ -1,0 +1,12 @@
+[package]
+name = "tronteq-shared"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tronteq_shared"
+path = "src/lib.rs"
+
+[dependencies]
+memmap2 = { workspace = true }
+anyhow = { workspace = true }

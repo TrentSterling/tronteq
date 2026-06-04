@@ -1,0 +1,22 @@
+[package]
+name = "tronteq"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "tronteq"
+path = "src/main.rs"
+
+[dependencies]
+tronteq-shared = { path = "../shared" }
+eframe = { workspace = true, features = ["wgpu"] }
+egui = { workspace = true }
+anyhow = { workspace = true }
+windows = { workspace = true }
+tray-icon = "0.19"
+raw-window-handle = "0.6"
+rustfft = "6"
+
+[build-dependencies]
+# Embeds the requireAdministrator manifest + the .exe icon (Trent's face).
+winresource = "0.1"

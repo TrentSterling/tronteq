@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Building TrontEQ: a zero-latency Windows system EQ in one day</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --panel: #0c141e;
+    --panel2: #101b27;
+    --cyan: #00e0ff;
+    --cyan-dim: #0096b8;
+    --text: #d8f0f8;
+    --muted: #6e90a8;
+    --line: rgba(0, 224, 255, 0.16);
+    --ok: #5ae6c8;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(rgba(0, 220, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 220, 255, 0.05) 1px, transparent 1px);
+    background-size: 38px 38px;
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    line-height: 1.65;
+    font-size: 17px;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 24px 96px; }
+  header.hero { padding: 72px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 36px; }
+  .draft-tag {
+    display: inline-block; font-size: 0.72rem; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--bg); background: var(--cyan); padding: 3px 10px; border-radius: 6px; font-weight: 700;
+    margin-bottom: 20px;
+  }
+  h1 {
+    font-size: 2.5rem; line-height: 1.1; margin: 0 0 14px; font-weight: 800;
+    color: #eafaff; text-shadow: 0 0 26px rgba(0, 224, 255, 0.35);
+  }
+  h1 .accent { color: var(--cyan); }
+  .lead { font-size: 1.18rem; color: #b8d8e6; margin: 0 0 18px; }
+  .meta { color: var(--muted); font-size: 0.95rem; }
+  .meta a { color: var(--cyan); text-decoration: none; }
+  .meta a:hover { text-decoration: underline; }
+  h2 {
+    font-size: 1.6rem; margin: 52px 0 14px; color: var(--cyan);
+    text-shadow: 0 0 18px rgba(0, 224, 255, 0.25); border-left: 3px solid var(--cyan);
+    padding-left: 14px;
+  }
+  h3 { font-size: 1.18rem; margin: 30px 0 8px; color: #bfeaf6; }
+  p { margin: 0 0 16px; }
+  a { color: var(--cyan); }
+  strong { color: #eafaff; }
+  code {
+    font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    background: var(--panel2); color: #9fe9ff; padding: 1px 6px; border-radius: 5px;
+    font-size: 0.88em; border: 1px solid var(--line);
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--cyan-dim);
+    border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-size: 0.86rem; line-height: 1.5;
+    box-shadow: 0 0 30px -12px rgba(0, 224, 255, 0.25);
+  }
+  pre code { background: none; border: none; color: #c8eef8; padding: 0; }
+  .walls { list-style: none; counter-reset: wall; padding: 0; margin: 24px 0; }
+  .walls > li {
+    counter-increment: wall; position: relative; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 18px 64px;
+    margin-bottom: 14px;
+  }
+  .walls > li::before {
+    content: counter(wall); position: absolute; left: 16px; top: 16px;
+    width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
+    background: rgba(0, 224, 255, 0.12); color: var(--cyan); font-weight: 800;
+    border: 1px solid rgba(0, 224, 255, 0.4);
+  }
+  .walls h3 { margin: 0 0 4px; color: #eafaff; }
+  .sym { color: var(--muted); font-size: 0.92rem; }
+  .fix { color: var(--ok); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 8px; }
+  .chip {
+    background: rgba(0, 224, 255, 0.08); border: 1px solid var(--line); color: #aee6f5;
+    border-radius: 20px; padding: 5px 13px; font-size: 0.85rem;
+  }
+  blockquote {
+    margin: 22px 0; padding: 14px 20px; border-left: 3px solid var(--cyan);
+    background: var(--panel2); border-radius: 0 10px 10px 0; color: #cfeefa; font-style: italic;
+  }
+  hr { border: none; border-top: 1px solid var(--line); margin: 48px 0; }
+  footer { color: var(--muted); font-size: 0.92rem; }
+  footer a { color: var(--cyan); text-decoration: none; }
+  .rainbow {
+    background: linear-gradient(90deg,#ff5b6e,#ffb347,#7CFF6B,#00e0ff,#9b8cff,#ff6ad5);
+    -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 800;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <span class="draft-tag">Draft</span>
+  <h1>Building <span class="accent">TrontEQ</span>: a zero-latency Windows system EQ in one day</h1>
+  <p class="lead">Windows ships no system-wide equalizer. So I built one: a custom Audio Processing Object that runs inline in the audio graph (no virtual cable, no added latency), driven by a Rust GUI. Here is the whole build, including the seven walls between "it compiles" and "I can finally hear it."</p>
+  <p class="meta">by <a href="https://tront.xyz">Trent Sterling</a> &middot; 2026-06-03 &middot; Rust + C++ + a lot of Windows audio internals</p>
+</header>
+
+<h2>The idea</h2>
+<p>I wanted EQ on everything: games, movies, music, the lot. The usual route is a virtual audio cable that pipes the system into an app that processes and plays it back, but that adds a buffer hop and latency I did not want. The right tool for "zero added latency" is an <strong>APO</strong> (Audio Processing Object): a COM DLL that Windows loads straight into <code>audiodg.exe</code> and runs inline on the audio graph. The only cost is the math itself.</p>
+<p>The plan: a C++ APO doing the DSP, a Rust GUI to draw the curve, and a shared memory-mapped file as the wire between them. The APO reads parameters every buffer; the GUI writes them on every drag. Simple on paper.</p>
+
+<h2>Seven walls</h2>
+<p>The APO compiled, signed, and installed on the very first try. It also did absolutely nothing. Getting from there to audible was a chain of seven separate, individually-silent failures. Each one looked like the last one ("still no sound"), which is what made it fun.</p>
+
+<ol class="walls">
+  <li>
+    <h3>The installer panicked on its own CLSID</h3>
+    <p class="sym">Symptom: <code>install</code> crashed with "Invalid GUID string."</p>
+    <p class="fix">Fix: <code>windows-core</code>'s <code>From&lt;&amp;str&gt; for GUID</code> wants the bare 36-char form; my CLSID had braces (38 chars), so the assert blew up. And because only <code>From</code> is implemented, <code>try_into()</code> could not return an error, it just panicked. Strip the braces.</p>
+  </li>
+  <li>
+    <h3>The APO loaded as COM, never as an effect</h3>
+    <p class="sym">Symptom: registered fine, zero effect on audio.</p>
+    <p class="fix">Fix: the engine only hosts an endpoint effect that implements <code>IAudioSystemEffects2</code>. Mine exposed only the bare <code>IAudioProcessingObject</code> interfaces, so Windows treated the CLSID as a plain COM object and walked away.</p>
+  </li>
+  <li>
+    <h3>Loaded, but silent</h3>
+    <p class="sym">Symptom: the DLL was finally in <code>audiodg</code>, but it could not read its own settings.</p>
+    <p class="fix">Fix: APOs run inside <code>audiodg</code> under a restricted token. The settings file needed an ACL grant for <code>ALL APPLICATION PACKAGES</code>, otherwise the APO fell back to its bypassed default. (Diagnosing this was its own saga: <code>audiodg</code> is a protected process, so it cannot write a log file and its debug output never reaches a normal listener. The reliable signal turned out to be a sharing-lock test on the DLL.)</p>
+  </li>
+  <li>
+    <h3>The effect was written to the wrong registry store</h3>
+    <p class="sym">Symptom: "install succeeded," but the CLSID was nowhere the engine looks.</p>
+    <p class="fix">Fix: setting <code>PKEY_FX_StreamEffectClsid</code> through <code>IMMDevice::OpenPropertyStore</code> writes the endpoint's <strong>Properties</strong> store. The engine reads effect CLSIDs from the separate <strong>FxProperties</strong> registry key, which is TrustedInstaller-owned. I had to take ownership and write a plain <code>REG_SZ</code> there.</p>
+  </li>
+  <li>
+    <h3>Still not loading</h3>
+    <p class="sym">Symptom: CLSID in the right slot, still dead.</p>
+    <p class="fix">Fix: a real APO is also registered under <code>HKLM\SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{clsid}</code> with metadata (flags, version, connection counts, the system-effects interface IID). Without that registration, the engine never instantiates the CLSID as an APO. This was the big missing piece.</p>
+  </li>
+  <li>
+    <h3>The endpoint slot, and the device toggle</h3>
+    <p class="sym">Symptom: registered everything, restarted the audio service a dozen times, nothing.</p>
+    <p class="fix">Fix: two things. The right slot for a whole-output EQ is <strong>EFX</strong> (endpoint effect), not SFX. And an already-connected endpoint only re-reads its effects on real re-enumeration: disable/enable the device, or reconnect it. An <code>audiosrv</code> restart alone is not enough.</p>
+  </li>
+  <li>
+    <h3>Loaded, processing, and muting everything</h3>
+    <p class="sym">Symptom: the APO ran (confirmed!), then killed the audio.</p>
+    <p class="fix">Fix: <code>APO_FLAG_INPLACE</code> is only a hint. At the endpoint stage Windows hands you <strong>separate</strong> input and output buffers. My code processed the input and never wrote the output, so the output stayed silent regardless of bypass. Copy input to output, process the output.</p>
+  </li>
+</ol>
+
+<blockquote>"OH fuck I hear it. OW MY EARS."</blockquote>
+<p>That was the moment it all came together (I had a deliberately brutal test curve loaded). Seven fixes, each necessary, none sufficient alone.</p>
+
+<h2>From an EQ to a processor</h2>
+<p>Once sound flowed, the EQ alone felt thin. It grew into a full signal chain that audio flows through, each stage toggleable:</p>
+<pre><code>Input -&gt; Preamp -&gt; EQ -&gt; AGC -&gt; Compressor -&gt; Limiter -&gt; Output</code></pre>
+<div class="chips">
+  <span class="chip">8 bands</span>
+  <span class="chip">8 filter types (peak, shelves, HP, LP, band-pass, notch, all-pass)</span>
+  <span class="chip">preamp</span>
+  <span class="chip">compressor (soft knee + makeup)</span>
+  <span class="chip">brickwall limiter</span>
+  <span class="chip">auto-loudness (AGC)</span>
+</div>
+<p>The AGC is the one I wanted most: it rides a slow gain toward a target loudness, so quiet dialogue comes up and gunshots get caught by the limiter. No more whispers buried under wall-shaking explosions; everything just sits loud.</p>
+
+<h2>Polish that made it feel real</h2>
+<h3>Presets on every component</h3>
+<p>Compressor gets Gentle / Punchy / Crush, auto-loudness gets Subtle / Movie night / Everything loud, the limiter gets ceiling presets, and the EQ gets curve presets (including a "Tinny" one that sounds intentionally awful, great for confirming the thing is actually running). Every section has a reset.</p>
+
+<h3>A realtime visualizer</h3>
+<p>The APO cannot feed audio back to the GUI (that restricted token again). So the visualizer taps the endpoint output directly with <strong>WASAPI loopback</strong> on its own thread, ring-buffers the samples, and draws a scrolling waveform behind the curve. Zero impact on the audio path.</p>
+
+<h3>A theme worthy of an EQ</h3>
+<p>The whole UI is the tront.xyz electric-cyan look: near-black, a faint grid (which an EQ already is), glowing curve and nodes. There is also a <span class="rainbow">neon rainbow skittles</span> mode, on by default, because why not.</p>
+
+<h3>The tray gotcha</h3>
+<p>Close should hide to the tray, not quit. The catch: eframe's <code>Visible(false)</code> hides the window, but <code>Visible(true)</code> will not bring it back, and while hidden the update loop is asleep so it cannot react anyway. The fix (cribbed from my other tray apps) is raw Win32: grab the real <code>HWND</code> and call <code>ShowWindow</code> / <code>SetForegroundWindow</code> straight from the tray event handler, which fires even while hidden.</p>
+
+<h3>Set it and forget it</h3>
+<p>The icon is my own face (the site favicon, eyepatch and all), baked into the exe. There is a zero-UAC autostart that launches it elevated at logon via a scheduled task. And because the APO lives in <code>audiodg</code>, not the GUI, the processing keeps running whether the window is open, in the tray, or fully quit. You only need the GUI to change something.</p>
+
+<h2>How it fits together</h2>
+<p>Three pieces, one wire:</p>
+<pre><code>Rust GUI  --writes-->  C:\ProgramData\TrontEq\state.bin  &lt;--reads--  C++ APO (in audiodg)
+   (the editor)            192-byte seqlock mmap                (the always-on processor)</code></pre>
+<p>The contract is a 192-byte struct mirrored byte-for-byte in Rust and C++, updated with a seqlock so the realtime thread never blocks. The GUI writes on every drag; the APO reads every buffer. That is the entire integration surface.</p>
+
+<h2>What is next</h2>
+<p>The one thing between this and a public release is code signing: today it needs Windows test-signing mode, which is a non-starter for handing to friends. The fix is a real certificate. The wildcard alternative a friend pitched: port the DSP to an <strong>ESP32</strong> and make it a little USB audio dongle with an on-board visualizer, which sidesteps the Windows driver problem entirely and runs on any machine. That one is filed under "helluva moonshot."</p>
+
+<hr>
+<footer>
+  <p>Built in a day, mostly at night. TrontEQ is part of <a href="https://tront.xyz">TrontStack</a>, a pile of interconnected dev tools and experiments.</p>
+  <p><a href="https://tront.xyz">tront.xyz</a> &middot; <a href="https://blog.tront.xyz">blog.tront.xyz</a> &middot; <a href="https://github.com/TrentSterling">github.com/TrentSterling</a></p>
+</footer>
+
+</div>
+</body>
+</html>
