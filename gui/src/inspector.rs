@@ -7,13 +7,15 @@
 use eframe::egui;
 use tronteq_shared::Dynamics;
 
-use crate::{curve, devices, knob, presets, profiles, show, theme, App};
+use crate::vizbus::Signal;
+use crate::{curve, devices, knob, presets, profiler, profiles, show, theme, App};
 
 /// Which inspector tab is open. Persisted in settings.json by name.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Chain,
     Viz,
+    Data,
     Setup,
 }
 
@@ -21,6 +23,7 @@ impl Tab {
     pub fn from_str(s: &str) -> Tab {
         match s {
             "viz" => Tab::Viz,
+            "data" => Tab::Data,
             "setup" => Tab::Setup,
             _ => Tab::Chain,
         }
@@ -29,6 +32,7 @@ impl Tab {
         match self {
             Tab::Chain => "chain",
             Tab::Viz => "viz",
+            Tab::Data => "data",
             Tab::Setup => "setup",
         }
     }
@@ -58,6 +62,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut tab, Tab::Chain, "CHAIN");
                 ui.selectable_value(&mut tab, Tab::Viz, "VIZ");
+                ui.selectable_value(&mut tab, Tab::Data, "DATA");
                 ui.selectable_value(&mut tab, Tab::Setup, "SETUP");
             });
             ui.separator();
@@ -65,6 +70,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 match tab {
                     Tab::Chain => chain_tab(ui, &mut preamp, &mut d, &mut chain_changed),
                     Tab::Viz => viz_tab(ui, &mut layers, &mut rainbow, &mut show_mode),
+                    Tab::Data => data_tab(ui, app),
                     Tab::Setup => setup_tab(
                         ui,
                         ctx,
@@ -382,4 +388,110 @@ fn setup_tab(
         app.state.version(),
         app.frame_ms,
     ));
+}
+
+/// The data pipes, live: every VizBus signal as a label + 4s sparkline +
+/// current value. What wiggles here is exactly what a viz mode can be fed.
+fn data_tab(ui: &mut egui::Ui, app: &App) {
+    let b = &app.vizbus;
+    let rgba = |c: egui::Color32, a: u8| {
+        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+    };
+
+    ui.label(egui::RichText::new("RHYTHM").color(theme::cyan()).strong());
+    ui.horizontal(|ui| {
+        let bpm_txt = if b.bpm > 1.0 { format!("{:.0}", b.bpm) } else { "--".to_string() };
+        ui.label(
+            egui::RichText::new(bpm_txt)
+                .family(egui::FontFamily::Name("display".into()))
+                .color(theme::cyan())
+                .strong()
+                .size(32.0),
+        );
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new("BPM").color(theme::muted()).small());
+            ui.label(
+                egui::RichText::new(format!("conf {:.0}%", b.bpm_conf * 100.0))
+                    .color(theme::muted())
+                    .small(),
+            );
+        });
+        // Beat blinker: bright on the beat, fading through the bar.
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 30.0), egui::Sense::hover());
+        let a = ((1.0 - b.beat_phase).powi(2) * 220.0) as u8;
+        ui.painter().circle_filled(rect.center(), 7.0, rgba(theme::cyan(), a.max(25)));
+    });
+    pipe_row(ui, "pulse", &format!("{:.2}", b.pulse), b, Signal::Pulse, theme::cyan());
+    pipe_row(ui, "flux", &format!("{:.2}", b.flux), b, Signal::Flux, theme::viz_cap());
+    ui.separator();
+
+    ui.label(egui::RichText::new("SIGNAL").color(theme::cyan()).strong());
+    pipe_row(ui, "bass", &format!("{:.2}", b.bass), b, Signal::Bass, theme::viz_hsv(0.0));
+    pipe_row(ui, "mid", &format!("{:.2}", b.mid), b, Signal::Mid, theme::viz_hsv(0.33));
+    pipe_row(ui, "treble", &format!("{:.2}", b.treble), b, Signal::Treble, theme::viz_hsv(0.66));
+    pipe_row(ui, "bright", &format!("{:.2}", b.centroid), b, Signal::Centroid, theme::viz_accent());
+    pipe_row(ui, "loud", &format!("{:.1} dB", b.loud_db), b, Signal::Loud, theme::ok());
+    pipe_row(ui, "crest", &format!("{:.1} dB", b.crest_db), b, Signal::Crest, theme::viz_accent());
+    ui.separator();
+
+    ui.label(egui::RichText::new("STEREO").color(theme::cyan()).strong());
+    pipe_row(ui, "corr", &format!("{:+.2}", b.corr), b, Signal::Corr, theme::cyan());
+    pipe_row(ui, "width", &format!("{:.2}", b.width), b, Signal::Width, theme::viz_cap());
+    ui.separator();
+
+    ui.label(egui::RichText::new("ENGINE").color(theme::cyan()).strong());
+    let scopes = [
+        ("update", profiler::Scope::Update),
+        ("panels", profiler::Scope::Panels),
+        ("histories", profiler::Scope::Histories),
+        ("canvas", profiler::Scope::Canvas),
+    ];
+    ui.label(
+        egui::RichText::new(format!("frame {:.2} ms  (F10 = overlay)", app.frame_ms))
+            .color(theme::text())
+            .small(),
+    );
+    for (name, s) in scopes {
+        let (ema, last) = app.profiler.ms(s);
+        ui.label(
+            egui::RichText::new(format!("{name:<10} {ema:5.2} | {last:5.2} ms"))
+                .color(theme::muted())
+                .small(),
+        );
+    }
+}
+
+fn pipe_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &str,
+    bus: &crate::vizbus::VizBus,
+    sig: Signal,
+    color: egui::Color32,
+) {
+    let hist = &bus.hist[sig as usize];
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [52.0, 18.0],
+            egui::Label::new(egui::RichText::new(label).color(theme::muted()).small()),
+        );
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(108.0, 18.0), egui::Sense::hover());
+        let p = ui.painter_at(rect);
+        p.rect_filled(rect, 2.0, theme::meter_track());
+        let n = hist.len();
+        if n >= 2 {
+            let pts: Vec<egui::Pos2> = hist
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    egui::pos2(
+                        rect.left() + i as f32 / (n - 1) as f32 * rect.width(),
+                        rect.bottom() - 1.0 - v.clamp(0.0, 1.0) * (rect.height() - 2.0),
+                    )
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, egui::Stroke::new(1.2, color)));
+        }
+        ui.label(egui::RichText::new(value).small());
+    });
 }

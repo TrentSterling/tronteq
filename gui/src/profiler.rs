@@ -55,6 +55,12 @@ impl Profiler {
         self.acc[scope as usize].frame_ns += elapsed.as_nanos() as u64;
     }
 
+    /// (EMA ms, last-frame ms) for a scope — the DATA tab readout.
+    pub fn ms(&self, scope: Scope) -> (f32, f32) {
+        let a = self.acc[scope as usize];
+        (a.ms, a.last_ms)
+    }
+
     /// Fold this frame's accumulations into the EMAs. Call once per frame,
     /// after every scope has closed.
     pub fn commit_frame(&mut self) {

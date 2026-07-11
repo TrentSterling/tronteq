@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.1] - 2026-07-11 (night arc, wave 1)
+
+- **VizBus** (`vizbus.rs`): the data pipes, unified — band energies, spectral
+  centroid + flux, beat pulse, **realtime BPM** (onset autocorrelation, 60-180,
+  confidence + beat phase), momentary loudness, crest, stereo corr/width. Every
+  signal keeps a 4s history. Zero steady-state allocation.
+- **DATA tab** (inspector): living pipe inspector — each signal as label +
+  sparkline + value; BPM hero readout with a beat-phase blinker; ENGINE section
+  exposes the profiler scopes. What wiggles in DATA is what viz can be fed.
+- Versioning policy: patch bumps for incremental work; minor = real leaps.
+
 ## [0.5.0] - 2026-07-11 (evening arc)
 
 Make-it-shine pass: dynamic themes, a real profiler, and a headless UI harness.

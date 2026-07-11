@@ -19,6 +19,7 @@ mod spectrogram;
 mod state_writer;
 mod theme;
 mod visualizer;
+mod vizbus;
 mod win;
 
 use anyhow::Result;
@@ -174,6 +175,7 @@ struct App {
     show: show::ShowState,
     frame_ms: f32, // EMA of eframe's reported per-frame CPU cost
     profiler: profiler::Profiler,
+    vizbus: vizbus::VizBus,
 }
 
 /// Which name-entry modal is open.
@@ -355,6 +357,7 @@ impl App {
             show: show::ShowState::new(show::ShowMode::from_str(&ui_settings.show_mode)),
             frame_ms: 0.0,
             profiler: profiler::Profiler::default(),
+            vizbus: vizbus::VizBus::new(),
             settings_cache: ui_settings,
         };
         me.commit();
@@ -662,7 +665,9 @@ impl eframe::App for App {
         let wave = self.viz.snapshot();
         let spectrum = self.viz.spectrum();
         let stereo = self.viz.stereo();
-        let (rms, _peak) = self.viz.level();
+        let (rms, peak) = self.viz.level();
+        // Feed the data pipes (self-gates to 60 Hz; DATA tab + viz consume it).
+        self.vizbus.step(&spectrum, &stereo, rms, peak);
 
         // Advance the GUI-side history visualizers on a fixed ~60Hz wall-clock
         // cadence rather than once-per-frame. This decouples scroll speed from how
