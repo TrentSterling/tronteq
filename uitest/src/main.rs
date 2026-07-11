@@ -15,6 +15,8 @@ mod color;
 mod theme;
 #[path = "../../gui/src/dsp_preview.rs"]
 mod dsp_preview;
+#[path = "../../gui/src/glstage.rs"]
+mod glstage;
 #[path = "../../gui/src/show.rs"]
 mod show;
 #[path = "../../gui/src/curve.rs"]
@@ -108,7 +110,17 @@ fn shot_canvas(name: &str, palette: theme::Palette, mode: show::ShowMode, rainbo
                 loudness: &viz_data.loudness,
                 spectro_tex: None,
             };
-            curve::draw(ui, &mut bands, 48_000.0, rainbow, &viz, &mut show_state);
+            // No GL stage in the kittest harness (wgpu renderer): painter path only.
+            curve::draw(
+                ui,
+                &mut bands,
+                48_000.0,
+                rainbow,
+                &viz,
+                &mut show_state,
+                None,
+                glstage::Uniforms::default(),
+            );
         });
 
     // Let the wall-clock-gated simulations advance (16ms per step).

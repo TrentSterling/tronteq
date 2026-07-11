@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0] - 2026-07-11 (night arc, wave 2 — the shader leap)
+
+- **GL viz stage** (`glstage.rs`): real GLSL under the canvas via egui
+  PaintCallback on the glow backend. Ping-pong RGBA16F feedback rendertextures
+  (the Milkdrop trick: prev frame re-sampled through a warp, new content
+  splatted on top), FFT buckets + waveform uploaded as R32F textures, VizBus
+  stats (bass/mid/treble, pulse, beat phase, brightness) as uniforms.
+- **Three shader modes** in SHOW: **Warp (GL)** — feedback zoom/rotate/decay
+  with a beat-breathing spectrum ring; **Flame (GL)** — rising heat field fed
+  by the FFT at the floor, noisy cooling, kick flares; **Smoke (GL)** — curl-
+  noise advected density with buoyancy and beat bursts. Painter layers + the
+  EQ curve composite on top, so everything cross-pollinates.
+- GL init failure degrades gracefully (painter modes unaffected, logged).
+
 ## [0.5.1] - 2026-07-11 (night arc, wave 1)
 
 - **VizBus** (`vizbus.rs`): the data pipes, unified — band energies, spectral

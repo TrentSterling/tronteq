@@ -8,6 +8,7 @@ mod color;
 mod curve;
 mod devices;
 mod dsp_preview;
+mod glstage;
 mod inspector;
 mod knob;
 mod presets;
@@ -176,6 +177,8 @@ struct App {
     frame_ms: f32, // EMA of eframe's reported per-frame CPU cost
     profiler: profiler::Profiler,
     vizbus: vizbus::VizBus,
+    /// The shader stage (None if GL init failed; painter modes still work).
+    gl_stage: Option<std::sync::Arc<std::sync::Mutex<glstage::GlStage>>>,
 }
 
 /// Which name-entry modal is open.
@@ -236,6 +239,18 @@ impl App {
 
         let devices = devices::list().unwrap_or_default();
         let selected_device = devices.iter().position(|d| d.is_default).unwrap_or(0);
+
+        // Compile the GL viz stage once (glow backend exposes the context here).
+        let gl_stage = cc.gl.as_ref().and_then(|gl| match glstage::GlStage::new(gl) {
+            Ok(s) => {
+                log_line("glstage: shaders compiled");
+                Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
+            }
+            Err(e) => {
+                log_line(&format!("glstage: init FAILED ({e}) - GL modes disabled"));
+                None
+            }
+        });
 
         // Persisted UI settings + saved sound profiles. Theme/zoom apply before
         // the first frame; the live chain still comes from state.bin (the APO is
@@ -358,6 +373,7 @@ impl App {
             frame_ms: 0.0,
             profiler: profiler::Profiler::default(),
             vizbus: vizbus::VizBus::new(),
+            gl_stage,
             settings_cache: ui_settings,
         };
         me.commit();
@@ -720,6 +736,40 @@ impl eframe::App for App {
         // mutates bands + show — disjoint fields, so no clones. (The old code
         // cloned both history Vecs EVERY FRAME just to satisfy borrowck.)
         let t_canvas = std::time::Instant::now();
+        // Uniforms for the GL stage: VizBus stats + theme accent + the audio
+        // textures' source data, all by value (Copy) for the paint callback.
+        let uni = {
+            let b = &self.vizbus;
+            let acc = theme::viz_accent();
+            let mut spec_arr = [0.0f32; glstage::SPEC_W];
+            for (i, s) in spectrum.iter().take(glstage::SPEC_W).enumerate() {
+                spec_arr[i] = *s;
+            }
+            let mut wave_arr = [0.0f32; glstage::WAVE_W];
+            if wave.len() >= 2 {
+                let step = (wave.len() / glstage::WAVE_W).max(1);
+                for (i, w) in wave.iter().step_by(step).take(glstage::WAVE_W).enumerate() {
+                    wave_arr[i] = *w;
+                }
+            }
+            glstage::Uniforms {
+                mode: glstage::GlMode::Warp, // overwritten by the active mode
+                bass: b.bass,
+                mid: b.mid,
+                treble: b.treble,
+                pulse: b.pulse,
+                beat_phase: b.beat_phase,
+                bright: b.centroid,
+                rainbow: self.rainbow,
+                accent: [
+                    acc.r() as f32 / 255.0,
+                    acc.g() as f32 / 255.0,
+                    acc.b() as f32 / 255.0,
+                ],
+                spec: spec_arr,
+                wave: wave_arr,
+            }
+        };
         let mut eq_changed = false;
         {
             let viz = curve::VizData {
@@ -733,9 +783,11 @@ impl eframe::App for App {
             };
             let bands = &mut self.bands;
             let show = &mut self.show;
+            let gl = self.gl_stage.as_ref();
             let (sample_rate, rainbow) = (self.sample_rate, self.rainbow);
             egui::CentralPanel::default().show(ctx, |ui| {
-                eq_changed = curve::draw(ui, bands, sample_rate, rainbow, &viz, show).changed;
+                eq_changed =
+                    curve::draw(ui, bands, sample_rate, rainbow, &viz, show, gl, uni).changed;
             });
         }
         self.profiler.add(profiler::Scope::Canvas, t_canvas.elapsed());

@@ -30,15 +30,21 @@ pub enum ShowMode {
     ScopeTrails,
     Tunnel,
     Particles,
+    GlWarp,
+    GlFlame,
+    GlSmoke,
 }
 
 impl ShowMode {
-    pub const ALL: [ShowMode; 5] = [
+    pub const ALL: [ShowMode; 8] = [
         ShowMode::Off,
         ShowMode::BarsXl,
         ShowMode::ScopeTrails,
         ShowMode::Tunnel,
         ShowMode::Particles,
+        ShowMode::GlWarp,
+        ShowMode::GlFlame,
+        ShowMode::GlSmoke,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -47,6 +53,9 @@ impl ShowMode {
             ShowMode::ScopeTrails => "Scope trails",
             ShowMode::Tunnel => "Tunnel",
             ShowMode::Particles => "Particles",
+            ShowMode::GlWarp => "Warp (GL)",
+            ShowMode::GlFlame => "Flame (GL)",
+            ShowMode::GlSmoke => "Smoke (GL)",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -56,6 +65,9 @@ impl ShowMode {
             ShowMode::ScopeTrails => "scope_trails",
             ShowMode::Tunnel => "tunnel",
             ShowMode::Particles => "particles",
+            ShowMode::GlWarp => "gl_warp",
+            ShowMode::GlFlame => "gl_flame",
+            ShowMode::GlSmoke => "gl_smoke",
         }
     }
     pub fn from_str(s: &str) -> ShowMode {
@@ -64,7 +76,19 @@ impl ShowMode {
             "scope_trails" => ShowMode::ScopeTrails,
             "tunnel" => ShowMode::Tunnel,
             "particles" => ShowMode::Particles,
+            "gl_warp" => ShowMode::GlWarp,
+            "gl_flame" => ShowMode::GlFlame,
+            "gl_smoke" => ShowMode::GlSmoke,
             _ => ShowMode::Off,
+        }
+    }
+    /// GL-stage modes are rendered by glstage, not the painter.
+    pub fn gl_mode(self) -> Option<crate::glstage::GlMode> {
+        match self {
+            ShowMode::GlWarp => Some(crate::glstage::GlMode::Warp),
+            ShowMode::GlFlame => Some(crate::glstage::GlMode::Flame),
+            ShowMode::GlSmoke => Some(crate::glstage::GlMode::Smoke),
+            _ => None,
         }
     }
 }
@@ -126,7 +150,7 @@ impl ShowState {
     /// Draw the active mode as the deepest canvas layer. Advances the animation
     /// on a 16ms wall-clock gate internally; safe to call every frame.
     pub fn draw(&mut self, painter: &egui::Painter, rect: Rect, viz: &VizData, rainbow: bool) {
-        if self.mode == ShowMode::Off {
+        if self.mode == ShowMode::Off || self.mode.gl_mode().is_some() {
             return;
         }
         let now = Instant::now();
@@ -135,7 +159,7 @@ impl ShowState {
             self.step(viz, rect);
         }
         match self.mode {
-            ShowMode::Off => {}
+            ShowMode::Off | ShowMode::GlWarp | ShowMode::GlFlame | ShowMode::GlSmoke => {}
             ShowMode::BarsXl => self.draw_bars_xl(painter, rect, viz.spectrum, rainbow),
             ShowMode::ScopeTrails => self.draw_scope_trails(painter, rect, rainbow),
             ShowMode::Tunnel => self.draw_tunnel(painter, rect, viz.spectrum, rainbow),

@@ -58,6 +58,7 @@ pub struct DrawResponse {
     pub changed: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut egui::Ui,
     bands: &mut [Band; NUM_BANDS],
@@ -65,6 +66,8 @@ pub fn draw(
     rainbow: bool,
     viz: &VizData,
     show: &mut crate::show::ShowState,
+    gl: Option<&std::sync::Arc<std::sync::Mutex<crate::glstage::GlStage>>>,
+    uni: crate::glstage::Uniforms,
 ) -> DrawResponse {
     let avail = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(avail, Sense::click_and_drag());
@@ -75,8 +78,34 @@ pub fn draw(
     // Background + faint neon frame. Mode-aware as of v0.3 (dark scope / paper).
     painter.rect_filled(rect, 6.0, theme::canvas_bg());
     // SHOW eye-candy renders as the deepest layer; grid + analyzers + the EQ
-    // curve stack on top so the canvas stays interactive.
-    show.draw(&painter, rect, viz, rainbow);
+    // curve stack on top so the canvas stays interactive. GL modes go through
+    // the shader stage (feedback rendertextures); painter modes draw inline.
+    if let (Some(mode), Some(stage)) = (show.mode.gl_mode(), gl) {
+        let mut u = uni;
+        u.mode = mode;
+        let stage = stage.clone();
+        painter.add(egui::PaintCallback {
+            rect,
+            callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(
+                move |info, painter| {
+                    let vp = info.viewport_in_pixels();
+                    let rect_px = [
+                        vp.left_px as f32,
+                        vp.top_px as f32,
+                        (vp.left_px + vp.width_px) as f32,
+                        (vp.top_px + vp.height_px) as f32,
+                    ];
+                    let screen_px =
+                        [info.screen_size_px[0] as f32, info.screen_size_px[1] as f32];
+                    if let Ok(mut st) = stage.lock() {
+                        st.paint(painter.gl(), &u, rect_px, screen_px);
+                    }
+                },
+            )),
+        });
+    } else {
+        show.draw(&painter, rect, viz, rainbow);
+    }
     draw_grid(&painter, rect);
 
     // Stackable realtime overlays (any combination), back to front.
