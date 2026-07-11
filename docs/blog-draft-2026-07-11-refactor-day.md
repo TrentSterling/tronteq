@@ -72,4 +72,38 @@ elevated window). Biggest human-factors discovery of the day: UAC prompts expire
 after two minutes, and a dev deep in Discord will out-wait every single one.
 chord.wav became the official "click the dialog" bat-signal.
 
-*(fill in: before/after screenshots, launch verdict)*
+Launch verdict: v0.3.0 verified live same afternoon (crash.log showed the
+factory profiles seeding — new code provably running), and the UAC saga ended
+with a discovery: the self-elevating deploy script had been LOOPING (every
+approval spawned a fresh prompt instead of running — "I hit yes dude, Im
+telling you" was true the whole time). The fix that killed UAC forever: drive
+the existing elevated scheduled task — `schtasks /end` unlocks the exe,
+`cargo build`, `schtasks /run` relaunches elevated. Zero prompts, fully
+autonomous deploys from that moment on.
+
+## Arc 2, same day: SHOW modes, colormagic themes, and the eyeball-killer
+
+The evening run went bigger:
+
+- **SHOW modes** — the winamp-era eye candy landed: Bars XL (fat mirrored
+  bars), Scope trails (phosphor ghosts), Tunnel (rotating radial spectrum with
+  kick-triggered echo rings), Particles (spectral fountain + beat bursts). All
+  beat-reactive off a bass envelope + pulse detector.
+- **Dynamic themes** — the old "colormagic" experiment came home. TrontColors'
+  color math had already been ported to Rust inside Boxel; TrontEQ vendored it
+  and grew a runtime palette system: Dracula, Tokyo Night, Gruvbox, Hades Fire,
+  plus a Randomize button that rolls flavor/harmony/premade palettes through an
+  auto-theme deriver with WCAG contrast enforcement. Random, but always
+  readable. The morning's accessor refactor made it a drop-in.
+- **A real profiler** — Boxel's zero-alloc scoped stopwatch pattern, F10
+  overlay, and the first genuine perf fix: two Vecs were being cloned every
+  single frame just to satisfy the borrow checker. Split field borrows, gone.
+- **The headless harness** — a `uitest` crate renders the UI to PNGs via
+  egui_kittest: every SHOW mode, both classic themes, the About window at 100%
+  and 200%, and a sheet of theme rolls. The AI reviews the screenshots with
+  vision instead of asking the human to eyeball scales. It caught a real bug
+  on its FIRST run (a font-family panic) and verified the About fix at 200%
+  without a single manual screenshot.
+
+Four minor versions in one day: 0.2 -> 0.5. The app has profiles, tabs, themes,
+eye candy, a profiler, and a test harness it did not have at breakfast.

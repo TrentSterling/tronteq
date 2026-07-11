@@ -10,3 +10,5 @@ Cargo.lock
 *.log
 killlog.txt
 tmp_*.png
+harness_shots/
+dev-cycle.log
