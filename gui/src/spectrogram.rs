@@ -16,11 +16,18 @@ pub struct Spectrogram {
     tex: Option<TextureHandle>,
     dirty: bool,        // a new row landed (or color mode changed) since last upload
     last_rainbow: bool, // detect a rainbow toggle so we recolor on the next upload
+    last_dark: bool,    // detect a theme flip so the ramp recolors too
 }
 
 impl Spectrogram {
     pub fn new() -> Self {
-        Self { rows: VecDeque::with_capacity(ROWS), tex: None, dirty: false, last_rainbow: true }
+        Self {
+            rows: VecDeque::with_capacity(ROWS),
+            tex: None,
+            dirty: false,
+            last_rainbow: true,
+            last_dark: true,
+        }
     }
 
     /// Push the latest spectrum bars as the newest (top) row.
@@ -41,6 +48,11 @@ impl Spectrogram {
     pub fn texture(&mut self, ctx: &egui::Context, rainbow: bool) -> Option<TextureId> {
         if rainbow != self.last_rainbow {
             self.last_rainbow = rainbow;
+            self.dirty = true;
+        }
+        let dark = theme::dark_mode();
+        if dark != self.last_dark {
+            self.last_dark = dark;
             self.dirty = true;
         }
         if !self.dirty {
@@ -76,24 +88,33 @@ impl Spectrogram {
 }
 
 /// Map a bar's intensity (0..1) to a color. Rainbow tints by frequency column;
-/// otherwise an electric-cyan ramp. Alpha scales with intensity so quiet bins
-/// fade out and the curve stays readable; loud bins push toward white.
+/// otherwise a cyan ramp (electric on dark, deep teal on light). Alpha scales
+/// with intensity so quiet bins fade to the canvas. Loud bins push toward white
+/// on dark and toward black on light — "hot" reads correctly on both papers.
 fn color_for(col: usize, w: usize, v: f32, rainbow: bool) -> Color32 {
     let v = v.clamp(0.0, 1.0);
     if v <= 0.004 {
         return Color32::TRANSPARENT;
     }
+    let dark = theme::dark_mode();
     let (mut r, mut g, mut b) = if rainbow {
-        let c = theme::hsv(col as f32 / w as f32, 0.85, 1.0);
+        let c = theme::viz_hsv(col as f32 / w as f32);
         (c.r(), c.g(), c.b())
     } else {
-        (0u8, 224, 255)
+        let c = theme::viz_accent();
+        (c.r(), c.g(), c.b())
     };
-    // hot core: lift toward white for the loudest bins
-    let hot = ((v - 0.7).max(0.0) / 0.3 * 200.0) as u8;
-    r = r.saturating_add(hot);
-    g = g.saturating_add(hot / 2);
-    b = b.saturating_add(hot / 4);
+    if dark {
+        let hot = ((v - 0.7).max(0.0) / 0.3 * 200.0) as u8;
+        r = r.saturating_add(hot);
+        g = g.saturating_add(hot / 2);
+        b = b.saturating_add(hot / 4);
+    } else {
+        let hot = ((v - 0.7).max(0.0) / 0.3 * 90.0) as u8;
+        r = r.saturating_sub(hot);
+        g = g.saturating_sub(hot / 2);
+        b = b.saturating_sub(hot / 4);
+    }
     let a = (v * 235.0) as u8;
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }

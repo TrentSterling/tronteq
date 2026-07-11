@@ -55,6 +55,93 @@ pub fn ok() -> Color32 {
     if dark_mode() { OK } else { LIGHT_OK }
 }
 
+// ---- Canvas (the viz scope) -------------------------------------------------
+// The canvas historically stayed dark in both modes; as of v0.3 it follows the
+// theme. Light values are tuned as ink-on-paper: dark grid/labels, deep
+// saturated viz colors (full-value neon washes out on pale).
+
+pub const LIGHT_CANVAS_BG: Color32 = Color32::from_rgb(233, 238, 243);
+const INK: Color32 = Color32::from_rgb(22, 32, 42);
+
+/// Canvas background (deep navy dark / pale blue-gray light).
+pub fn canvas_bg() -> Color32 {
+    if dark_mode() { BG } else { LIGHT_CANVAS_BG }
+}
+/// Canvas grid lines.
+pub fn canvas_grid() -> Color32 {
+    if dark_mode() {
+        Color32::from_rgba_unmultiplied(0, 224, 255, 15)
+    } else {
+        Color32::from_rgba_unmultiplied(22, 42, 62, 26)
+    }
+}
+/// The emphasized 0 dB line.
+pub fn canvas_zero() -> Color32 {
+    if dark_mode() {
+        Color32::from_rgba_unmultiplied(0, 224, 255, 55)
+    } else {
+        Color32::from_rgba_unmultiplied(22, 42, 62, 85)
+    }
+}
+/// Axis labels on the canvas.
+pub fn canvas_label() -> Color32 {
+    if dark_mode() { MUTED } else { LIGHT_MUTED }
+}
+/// "White" accents (node rings, peak caps, meter peak ticks): white on dark,
+/// near-black ink on light.
+pub fn ink(a: u8) -> Color32 {
+    let c = if dark_mode() { Color32::WHITE } else { INK };
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+/// The pale-cyan glow-line core family (150,240,255 on dark; deep teal ink on light).
+pub fn glow_core(a: u8) -> Color32 {
+    if dark_mode() {
+        Color32::from_rgba_unmultiplied(150, 240, 255, a)
+    } else {
+        Color32::from_rgba_unmultiplied(0, 96, 128, a)
+    }
+}
+/// Node hover tooltip.
+pub fn tooltip_bg() -> Color32 {
+    if dark_mode() {
+        Color32::from_rgba_unmultiplied(6, 16, 24, 230)
+    } else {
+        Color32::from_rgba_unmultiplied(250, 252, 255, 240)
+    }
+}
+pub fn tooltip_text() -> Color32 {
+    if dark_mode() { TEXT } else { LIGHT_TEXT }
+}
+/// Corner-inset backdrop (the goniometer box).
+pub fn inset_bg() -> Color32 {
+    if dark_mode() {
+        Color32::from_rgba_unmultiplied(4, 10, 16, 150)
+    } else {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 170)
+    }
+}
+/// Primary viz accent (bars / fills / lines).
+pub fn viz_accent() -> Color32 {
+    if dark_mode() { Color32::from_rgb(0, 224, 255) } else { Color32::from_rgb(0, 122, 156) }
+}
+/// Bright bar-cap accent.
+pub fn viz_cap() -> Color32 {
+    if dark_mode() { Color32::from_rgb(150, 245, 255) } else { Color32::from_rgb(0, 88, 116) }
+}
+/// Meter track behind the VU fill.
+pub fn meter_track() -> Color32 {
+    if dark_mode() { BG } else { LIGHT_PANEL2 }
+}
+/// Rainbow sweep tuned per mode: full-value neon on dark, darker + denser on
+/// light so it reads as ink instead of washing out.
+pub fn viz_hsv(h: f32) -> Color32 {
+    if dark_mode() { hsv(h, 0.85, 1.0) } else { hsv(h, 0.95, 0.72) }
+}
+/// Rainbow for bright caps (desaturated-bright on dark, deep on light).
+pub fn viz_hsv_cap(h: f32) -> Color32 {
+    if dark_mode() { hsv(h, 0.5, 1.0) } else { hsv(h, 0.9, 0.55) }
+}
+
 fn border(a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(0, 224, 255, a)
 }

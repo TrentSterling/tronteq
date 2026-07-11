@@ -485,7 +485,7 @@ impl eframe::App for App {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 let title_color = if self.rainbow {
-                    theme::hsv((ui.input(|i| i.time) as f32 * 0.2).fract(), 0.9, 1.0)
+                    theme::viz_hsv((ui.input(|i| i.time) as f32 * 0.2).fract())
                 } else {
                     theme::cyan()
                 };
@@ -814,7 +814,7 @@ impl eframe::App for App {
 fn inout_meter(ui: &mut egui::Ui, in_rms: f32, in_peak: f32, out_rms: f32, out_peak: f32) {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 16.0), egui::Sense::hover());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 3.0, theme::BG);
+    p.rect_filled(rect, 3.0, theme::meter_track());
     let db = |v: f32| 20.0 * v.max(1e-5).log10();
     let norm = |d: f32| ((d + 54.0) / 54.0).clamp(0.0, 1.0);
     let x_at = |v: f32| rect.left() + rect.width() * norm(db(v));
@@ -826,7 +826,7 @@ fn inout_meter(ui: &mut egui::Ui, in_rms: f32, in_peak: f32, out_rms: f32, out_p
     } else if opk > norm(-12.0) {
         egui::Color32::from_rgb(255, 210, 90)
     } else {
-        theme::OK
+        theme::ok()
     };
     let orms = norm(db(out_rms));
     if orms > 0.0 {
@@ -837,7 +837,7 @@ fn inout_meter(ui: &mut egui::Ui, in_rms: f32, in_peak: f32, out_rms: f32, out_p
     let oxp = x_at(out_peak);
     p.line_segment(
         [egui::pos2(oxp, rect.top()), egui::pos2(oxp, rect.bottom())],
-        egui::Stroke::new(2.0, egui::Color32::WHITE),
+        egui::Stroke::new(2.0, theme::ink(255)),
     );
 
     // IN: a cyan cap line along the top to the input RMS extent + a half-height
@@ -867,7 +867,7 @@ fn inout_meter(ui: &mut egui::Ui, in_rms: f32, in_peak: f32, out_rms: f32, out_p
 fn out_meter(ui: &mut egui::Ui, rms: f32, peak: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(130.0, 12.0), egui::Sense::hover());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 3.0, theme::BG);
+    p.rect_filled(rect, 3.0, theme::meter_track());
     let db = |v: f32| 20.0 * v.max(1e-5).log10();
     let norm = |d: f32| ((d + 54.0) / 54.0).clamp(0.0, 1.0);
     let rt = norm(db(rms));
@@ -877,7 +877,7 @@ fn out_meter(ui: &mut egui::Ui, rms: f32, peak: f32) {
     } else if pt > norm(-12.0) {
         egui::Color32::from_rgb(255, 210, 90)
     } else {
-        theme::OK
+        theme::ok()
     };
     if rt > 0.0 {
         let fill =
@@ -887,7 +887,7 @@ fn out_meter(ui: &mut egui::Ui, rms: f32, peak: f32) {
     let px = rect.left() + rect.width() * pt;
     p.line_segment(
         [egui::pos2(px, rect.top()), egui::pos2(px, rect.bottom())],
-        egui::Stroke::new(2.0, egui::Color32::WHITE),
+        egui::Stroke::new(2.0, theme::ink(255)),
     );
 }
 

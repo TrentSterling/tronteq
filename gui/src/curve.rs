@@ -71,8 +71,8 @@ pub fn draw(
 
     let mut changed = false;
 
-    // Background + faint neon frame.
-    painter.rect_filled(rect, 6.0, theme::BG);
+    // Background + faint neon frame. Mode-aware as of v0.3 (dark scope / paper).
+    painter.rect_filled(rect, 6.0, theme::canvas_bg());
     draw_grid(&painter, rect);
 
     // Stackable realtime overlays (any combination), back to front.
@@ -165,7 +165,7 @@ pub fn draw(
         };
         let p = pos_from(freq, gain, rect);
         let color = if rainbow {
-            theme::hsv(i as f32 / NUM_BANDS as f32, 0.85, 1.0)
+            theme::viz_hsv(i as f32 / NUM_BANDS as f32)
         } else {
             band_color_from(kind)
         };
@@ -185,8 +185,8 @@ pub fn draw(
         painter.circle_filled(p, NODE_RADIUS + 7.0, rgba(color, halo / 2));
         painter.circle_filled(p, NODE_RADIUS + 3.0, rgba(color, halo));
         painter.circle_filled(p, NODE_RADIUS, color);
-        painter.circle_stroke(p, NODE_RADIUS, Stroke::new(1.5, Color32::WHITE));
-        painter.circle_filled(p, 2.0, Color32::WHITE);
+        painter.circle_stroke(p, NODE_RADIUS, Stroke::new(1.5, theme::ink(255)));
+        painter.circle_filled(p, 2.0, theme::ink(255));
 
         if hovered {
             let txt = format!(
@@ -200,14 +200,14 @@ pub fn draw(
             painter.rect_filled(
                 Rect::from_min_size(pos, Vec2::new(94.0, 64.0)),
                 4.0,
-                Color32::from_rgba_unmultiplied(6, 16, 24, 230),
+                theme::tooltip_bg(),
             );
             painter.text(
                 Pos2::new(pos.x + 7.0, pos.y + 5.0),
                 Align2::LEFT_TOP,
                 txt,
                 FontId::proportional(11.0),
-                theme::TEXT,
+                theme::tooltip_text(),
             );
         }
 
@@ -248,7 +248,7 @@ fn glow_line(painter: &egui::Painter, pts: &[Pos2], width: f32, alpha: u8, rainb
         return;
     }
     if !rainbow {
-        let col = Color32::from_rgba_unmultiplied(150, 240, 255, alpha);
+        let col = theme::glow_core(alpha);
         painter.add(egui::Shape::line(pts.to_vec(), Stroke::new(width, col)));
         return;
     }
@@ -258,7 +258,7 @@ fn glow_line(painter: &egui::Painter, pts: &[Pos2], width: f32, alpha: u8, rainb
     let mut i = 0;
     while i < n - 1 {
         let end = (i + step).min(n - 1);
-        let hue = theme::hsv((i as f32 + 0.5) / n as f32, 0.85, 1.0);
+        let hue = theme::viz_hsv((i as f32 + 0.5) / n as f32);
         painter.add(egui::Shape::line(
             pts[i..=end].to_vec(),
             Stroke::new(width, rgba(hue, alpha)),
@@ -331,8 +331,8 @@ fn nearest_node(bands: &[Band; NUM_BANDS], rect: Rect, pos: Pos2) -> Option<usiz
 }
 
 fn draw_grid(painter: &egui::Painter, rect: Rect) {
-    let grid = Color32::from_rgba_unmultiplied(0, 224, 255, 15);
-    let zero = Color32::from_rgba_unmultiplied(0, 224, 255, 55);
+    let grid = theme::canvas_grid();
+    let zero = theme::canvas_zero();
     // Vertical: octaves.
     let mut f = 20.0;
     while f <= 20_000.0 {
@@ -352,7 +352,7 @@ fn draw_grid(painter: &egui::Painter, rect: Rect) {
                 Align2::LEFT_TOP,
                 label,
                 FontId::proportional(10.0),
-                theme::MUTED,
+                theme::canvas_label(),
             );
         }
         f *= 2.0;
@@ -372,7 +372,7 @@ fn draw_grid(painter: &egui::Painter, rect: Rect) {
                 Align2::LEFT_TOP,
                 format!("{:+.0} dB", db),
                 FontId::proportional(10.0),
-                theme::MUTED,
+                theme::canvas_label(),
             );
         }
         db += 6.0;
@@ -411,9 +411,9 @@ fn draw_spectrum(painter: &egui::Painter, rect: Rect, bars: &[f32], rainbow: boo
         let x1 = rect.left() + (b + 1) as f32 * slot - gap * 0.5;
         let top = bottom - vv * max_h;
         let base = if rainbow {
-            theme::hsv(b as f32 / n as f32, 0.85, 1.0)
+            theme::viz_hsv(b as f32 / n as f32)
         } else {
-            Color32::from_rgb(0, 224, 255)
+            theme::viz_accent()
         };
         let i = mesh.vertices.len() as u32;
         mesh.colored_vertex(Pos2::new(x0, top), with_a(base, 150));
@@ -435,9 +435,9 @@ fn draw_spectrum(painter: &egui::Painter, rect: Rect, bars: &[f32], rainbow: boo
         let x1 = rect.left() + (b + 1) as f32 * slot - gap * 0.5;
         let top = bottom - vv * max_h;
         let cap = if rainbow {
-            theme::hsv(b as f32 / n as f32, 0.5, 1.0)
+            theme::viz_hsv_cap(b as f32 / n as f32)
         } else {
-            Color32::from_rgb(150, 245, 255)
+            theme::viz_cap()
         };
         painter.line_segment(
             [Pos2::new(x0, top), Pos2::new(x1, top)],
@@ -468,7 +468,7 @@ fn draw_peak_caps(painter: &egui::Painter, rect: Rect, peaks: &[f32]) {
         let y = bottom - vv * max_h;
         painter.line_segment(
             [Pos2::new(x0, y), Pos2::new(x1, y)],
-            Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 255, 255, 210)),
+            Stroke::new(2.0, theme::ink(210)),
         );
     }
 }
@@ -486,11 +486,7 @@ fn draw_waveform(painter: &egui::Painter, rect: Rect, wave: &[f32], rainbow: boo
         let y = mid - s.clamp(-1.0, 1.0) * amp;
         pts.push(Pos2::new(x, y));
     }
-    let col = if rainbow {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 38)
-    } else {
-        Color32::from_rgba_unmultiplied(0, 224, 255, 46)
-    };
+    let col = if rainbow { theme::ink(38) } else { rgba(theme::viz_accent(), 46) };
     // One connected path, not ~2000 separate feathered segments.
     painter.add(egui::Shape::line(pts, Stroke::new(1.0, col)));
 }
@@ -506,11 +502,11 @@ fn draw_analyzer(painter: &egui::Painter, rect: Rect, bars: &[f32], rainbow: boo
     let max_h = rect.height() * 0.92;
     let px = |b: usize| rect.left() + (b as f32 + 0.5) / n as f32 * rect.width();
     let py = |v: f32| bottom - v.clamp(0.0, 1.0) * max_h;
-    let hue = |b: usize| theme::hsv(b as f32 / n as f32, 0.85, 1.0);
+    let hue = |b: usize| theme::viz_hsv(b as f32 / n as f32);
 
     let mut mesh = egui::Mesh::default();
     for (b, &v) in bars.iter().enumerate() {
-        let base = if rainbow { hue(b) } else { Color32::from_rgb(0, 224, 255) };
+        let base = if rainbow { hue(b) } else { theme::viz_accent() };
         mesh.colored_vertex(Pos2::new(px(b), py(v)), rgba(base, 70));
         mesh.colored_vertex(Pos2::new(px(b), bottom), rgba(base, 0));
     }
@@ -543,9 +539,9 @@ fn draw_goniometer(painter: &egui::Painter, rect: Rect, stereo: &[[f32; 2]]) {
     painter.rect_filled(
         Rect::from_center_size(center, Vec2::splat(size)),
         6.0,
-        Color32::from_rgba_unmultiplied(4, 10, 16, 150),
+        theme::inset_bg(),
     );
-    let guide = Color32::from_rgba_unmultiplied(0, 224, 255, 45);
+    let guide = rgba(theme::viz_accent(), 45);
     painter.line_segment(
         [Pos2::new(center.x, center.y - half), Pos2::new(center.x, center.y + half)],
         Stroke::new(1.0, guide),
@@ -567,7 +563,7 @@ fn draw_goniometer(painter: &egui::Painter, rect: Rect, stereo: &[[f32; 2]]) {
         let x = center.x + side.clamp(-1.0, 1.0) * half;
         let y = center.y - mid.clamp(-1.0, 1.0) * half;
         let a = (40 + i * 180 / n).min(220) as u8;
-        let col = Color32::from_rgba_unmultiplied(120, 240, 255, a);
+        let col = theme::glow_core(a);
         let v = dots.vertices.len() as u32;
         dots.colored_vertex(Pos2::new(x - r, y - r), col);
         dots.colored_vertex(Pos2::new(x + r, y - r), col);
@@ -582,7 +578,7 @@ fn draw_goniometer(painter: &egui::Painter, rect: Rect, stereo: &[[f32; 2]]) {
         Align2::CENTER_BOTTOM,
         "STEREO",
         FontId::proportional(9.0),
-        theme::MUTED,
+        theme::canvas_label(),
     );
 }
 
@@ -602,9 +598,9 @@ fn draw_loudness(painter: &egui::Painter, rect: Rect, hist: &[f32], rainbow: boo
     let mut mesh = egui::Mesh::default();
     for (i, &v) in hist.iter().enumerate() {
         let base = if rainbow {
-            theme::hsv(0.55 - norm(v) * 0.45, 0.85, 1.0)
+            theme::viz_hsv(0.55 - norm(v) * 0.45)
         } else {
-            Color32::from_rgb(0, 224, 255)
+            theme::viz_accent()
         };
         mesh.colored_vertex(Pos2::new(px(i), py(v)), rgba(base, 95));
         mesh.colored_vertex(Pos2::new(px(i), bottom), rgba(base, 0));
@@ -620,10 +616,7 @@ fn draw_loudness(painter: &egui::Painter, rect: Rect, hist: &[f32], rainbow: boo
     painter.add(egui::Shape::mesh(mesh));
 
     let pts: Vec<Pos2> = (0..n).map(|i| Pos2::new(px(i), py(hist[i]))).collect();
-    painter.add(egui::Shape::line(
-        pts,
-        Stroke::new(1.5, Color32::from_rgba_unmultiplied(150, 240, 255, 200)),
-    ));
+    painter.add(egui::Shape::line(pts, Stroke::new(1.5, theme::glow_core(200))));
 }
 
 fn draw_composite(
@@ -645,13 +638,13 @@ fn draw_composite(
     }
 
     // Per-step color: cyan, or a rainbow sweep across X.
-    let hue = |i: usize| theme::hsv(i as f32 / STEPS as f32, 0.85, 1.0);
+    let hue = |i: usize| theme::viz_hsv(i as f32 / STEPS as f32);
     let with_a = |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
 
     // Gradient fill from the curve down to the 0 dB baseline.
     let mut mesh = egui::Mesh::default();
     for (i, p) in pts.iter().enumerate() {
-        let base = if rainbow { hue(i) } else { Color32::from_rgb(0, 224, 255) };
+        let base = if rainbow { hue(i) } else { theme::viz_accent() };
         mesh.colored_vertex(*p, with_a(base, 58));
         mesh.colored_vertex(Pos2::new(p.x, baseline), with_a(base, 0));
     }

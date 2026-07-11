@@ -26,29 +26,35 @@ Three artifacts. One IPC file.
 |---|---|
 | `apo/` | C++ COM DLL (`TrontEqApo.dll`). Subclasses `CBaseAudioProcessingObject`. RBJ biquads, DF-II-T, FTZ/DAZ. Reads `EqState` from file-backed mmap. |
 | `cli/` | Rust installer. `check` / `list-devices` / `install --device` / `uninstall`. Uses `windows` crate for `IMMDeviceEnumerator` + `IPropertyStore`. |
-| `gui/` | Rust eframe app. Draggable 8-band curve (`ui.painter()`), composite response preview, flat + bypass buttons. Writes the state file. |
-| `shared/` | Rust crate. `#[repr(C)] EqState` — the IPC contract. 144 bytes. Mirrored in `apo/src/EqState.h`. |
+| `gui/` | Rust eframe app (glow renderer). Draggable 8-band curve + viz layers (`curve.rs`), tabbed inspector CHAIN/VIZ/SETUP (`inspector.rs`), saved sound profiles (`profiles.rs`, JSON in `C:\ProgramData\TrontEq\profiles\`), persisted UI settings (`settings.rs`, settings.json), knobs/theme/spectrogram/visualizer/devices/tray modules. Writes the state file. |
+| `shared/` | Rust crate. `#[repr(C)] EqState` — the IPC contract. **216 bytes** (192 seqlock state + 24 APO-written telemetry). Serde on `Band`/`Dynamics` for profile JSON. Mirrored in `apo/src/EqState.h`. |
 
 ## IPC Contract
 
-File: `C:\ProgramData\TrontEq\state.bin` (144 bytes, file-backed memory map).
+File: `C:\ProgramData\TrontEq\state.bin` (216 bytes, file-backed memory map).
 
 ```
 EqState {
-  version:    AtomicU64     // offset 0, 8 bytes. Seqlock counter.
-  bands[8]:   Band          // offset 8, 128 bytes
-  bass_boost: f32           // offset 136, 4 bytes (unused in POC; reserved)
-  bypass:     u8            // offset 140, 1 byte
-  _pad:       [u8; 3]       // offset 141..=143
-}
+  version:   AtomicU64     // offset 0, 8 bytes. Seqlock counter (GUI writes).
+  bands[8]:  Band          // offset 8, 128 bytes
+  preamp_db: f32           // offset 136 (was bass_boost)
+  bypass:    u8            // offset 140
+  _pad:      [u8; 3]       // offset 141..=143
+  dynamics:  Dynamics      // offset 144, 48 bytes (comp/limiter/AGC params)
+  telemetry: Telemetry     // offset 192, 24 bytes — APO WRITES, GUI reads
+}                          //   (seq, in/out peak+rms, gr_db; not seqlocked)
 
 Band {
   freq: f32     // Hz
   gain: f32     // dB
   q:    f32     // dimensionless
-  kind: u32     // 0=Peak, 1=LowShelf, 2=HighShelf
+  kind: u32     // 0=Peak 1=LowShelf 2=HighShelf 3=HP 4=LP 5=BP 6=Notch 7=AllPass
 }
 ```
+
+Old 144/192-byte files are zero-extended on open; telemetry `seq == 0` means an
+APO build that never wrote it. Sound profiles serialize `bands + preamp_db +
+dynamics` to JSON (`profiles/*.json`) — same structs, separate from this file.
 
 **Seqlock protocol:** Writer does `version++` (odd → in-progress), writes bands, `version++` (even → committed). Reader loads version, copies bands, re-loads version; if both reads equal and even, use the bands.
 
