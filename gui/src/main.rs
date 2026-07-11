@@ -913,6 +913,67 @@ impl eframe::App for App {
             self.settings_cache = cur;
         }
 
+        // Self-screenshot pipe: the harness drops shot.req and we ReadPixels
+        // our own final GL frame to shot.png. This is the ONLY reliable
+        // capture of this app: eframe's Screenshot command is dropped on GL,
+        // PrintWindow is UIPI-blocked (we're elevated), and screen copies race
+        // monitors/z-order. A Foreground-layer callback runs after every panel
+        // has tessellated, so the grab is the real composed frame.
+        const SHOT_REQ: &str = r"C:\ProgramData\TrontEq\shot.req";
+        const SHOT_PNG: &str = r"C:\ProgramData\TrontEq\shot.png";
+        if std::path::Path::new(SHOT_REQ).exists() {
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("tronteq-selfshot"),
+            ));
+            let rect = ctx.content_rect();
+            painter.add(egui::PaintCallback {
+                rect,
+                callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(
+                    move |info, painter| {
+                        use eframe::glow::HasContext;
+                        let gl = painter.gl();
+                        let w = info.screen_size_px[0] as i32;
+                        let h = info.screen_size_px[1] as i32;
+                        if w <= 0 || h <= 0 {
+                            return;
+                        }
+                        let mut buf = vec![0u8; (w * h * 4) as usize];
+                        unsafe {
+                            gl.read_pixels(
+                                0,
+                                0,
+                                w,
+                                h,
+                                eframe::glow::RGBA,
+                                eframe::glow::UNSIGNED_BYTE,
+                                eframe::glow::PixelPackData::Slice(Some(&mut buf)),
+                            );
+                        }
+                        // GL rows are bottom-up; flip + force opaque alpha.
+                        let stride = (w * 4) as usize;
+                        let mut out = vec![0u8; buf.len()];
+                        for row in 0..h as usize {
+                            let src = &buf[(h as usize - 1 - row) * stride..][..stride];
+                            out[row * stride..][..stride].copy_from_slice(src);
+                        }
+                        for px in out.chunks_exact_mut(4) {
+                            px[3] = 255;
+                        }
+                        let _ = image::save_buffer(
+                            SHOT_PNG,
+                            &out,
+                            w as u32,
+                            h as u32,
+                            image::ColorType::Rgba8,
+                        );
+                        let _ = std::fs::remove_file(SHOT_REQ);
+                        crate::log_line("selfshot: wrote shot.png");
+                    },
+                )),
+            });
+        }
+
         // Close out the profiler frame + draw the F10 overlay (drawn after
         // commit so it never measures itself; Boxel rule).
         self.profiler.add(profiler::Scope::Update, t_update.elapsed());

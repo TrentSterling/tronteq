@@ -18,6 +18,8 @@ raw-window-handle = "0.6"
 rustfft = "6"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Self-screenshot PNG encode (harness pipe; PNG only, no default features).
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [build-dependencies]
 # Embeds the requireAdministrator manifest + the .exe icon (Trent's face).

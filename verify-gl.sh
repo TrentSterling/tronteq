@@ -28,7 +28,19 @@ io.open(p, "w", encoding="utf-8").write(json.dumps(s, indent=2))
 EOF
   schtasks //run //tn TrontEQ >/dev/null 2>&1
   sleep 7   # launch + feedback buffers fill + a few beats of stimulus
-  powershell -File livecap.ps1 -Out "$OUT/live_$m.png" | tail -1
+  # Self-screenshot pipe: drop the request, the app ReadPixels its own frame.
+  rm -f /c/ProgramData/TrontEq/shot.png
+  touch /c/ProgramData/TrontEq/shot.req
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -f /c/ProgramData/TrontEq/shot.png ] && break
+    sleep 0.4
+  done
+  if [ -f /c/ProgramData/TrontEq/shot.png ]; then
+    cp /c/ProgramData/TrontEq/shot.png "$OUT/live_$m.png"
+    echo "captured $m"
+  else
+    echo "MISSED $m"
+  fi
 done
 
 # Restore the user's settings + relaunch with them.
