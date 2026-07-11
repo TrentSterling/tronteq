@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1] - 2026-07-12
+
+Three shader fixes, all caught by the self-capture verify pipe (AI vision
+review), none by the user: Terrain (camera spawned inside the terrain — flat
+purple wash; now flies above a lower landscape with a finer 64-step march),
+Starfield (feedback accumulation blew out white; decay + bias-down + dimmer
+stars), Julia (non-escaping interior rendered max-bright; now near-black with
+a glowing boundary).
+
 ## [0.7.0] - 2026-07-11/12 (night arc, wave 3 — ten more FX + the fixes)
 
 - **VIEWPORT FIX**: GL modes no longer paint over the panels/toolbar. The
