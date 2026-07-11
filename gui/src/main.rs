@@ -12,6 +12,7 @@ mod knob;
 mod presets;
 mod profiles;
 mod settings;
+mod show;
 mod spectrogram;
 mod state_writer;
 mod theme;
@@ -168,6 +169,8 @@ struct App {
     modal_focus: bool,
     settings_cache: settings::AppSettings,
     tab: inspector::Tab,
+    show: show::ShowState,
+    frame_ms: f32, // EMA of eframe's reported per-frame CPU cost
 }
 
 /// Which name-entry modal is open.
@@ -338,6 +341,8 @@ impl App {
             name_buf: String::new(),
             modal_focus: false,
             tab: inspector::Tab::from_str(&ui_settings.inspector_tab),
+            show: show::ShowState::new(show::ShowMode::from_str(&ui_settings.show_mode)),
+            frame_ms: 0.0,
             settings_cache: ui_settings,
         };
         me.commit();
@@ -426,8 +431,15 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.poll_apply();
+
+        // Live frame-cost EMA (CPU side) for the SETUP readout.
+        if let Some(cpu) = frame.info().cpu_usage {
+            let ms = cpu * 1000.0;
+            self.frame_ms =
+                if self.frame_ms <= 0.0 { ms } else { self.frame_ms * 0.95 + ms * 0.05 };
+        }
 
         // Number keys 1-9 quickswap profiles (skipped while a text field has focus).
         if !ctx.wants_keyboard_input() {
@@ -699,6 +711,7 @@ impl eframe::App for App {
                 self.sample_rate,
                 self.rainbow,
                 &viz,
+                &mut self.show,
             );
             if response.changed {
                 self.commit();
@@ -789,6 +802,7 @@ impl eframe::App for App {
             zoom: ctx.zoom_factor(),
             active_profile: self.active_profile.clone(),
             inspector_tab: self.tab.as_str().to_string(),
+            show_mode: self.show.mode.as_str().to_string(),
         };
         if cur != self.settings_cache {
             cur.save();

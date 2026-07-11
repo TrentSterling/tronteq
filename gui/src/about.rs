@@ -32,6 +32,10 @@ pub fn show(
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        // Never taller than the viewport (at 200% zoom the content used to
+        // overflow both screen edges with no way to scroll); scroll instead.
+        .max_height(ctx.content_rect().height() * 0.85)
+        .vscroll(true)
         .open(&mut about_open)
         .show(ctx, |ui| {
             ui.set_max_width(380.0);

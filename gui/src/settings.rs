@@ -21,6 +21,7 @@ pub struct AppSettings {
     pub zoom: f32,
     pub active_profile: Option<String>,
     pub inspector_tab: String,
+    pub show_mode: String,
 }
 
 impl Default for AppSettings {
@@ -33,6 +34,7 @@ impl Default for AppSettings {
             zoom: 1.0,
             active_profile: None,
             inspector_tab: "chain".into(),
+            show_mode: "off".into(),
         }
     }
 }

@@ -64,6 +64,7 @@ pub fn draw(
     sample_rate: f32,
     rainbow: bool,
     viz: &VizData,
+    show: &mut crate::show::ShowState,
 ) -> DrawResponse {
     let avail = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(avail, Sense::click_and_drag());
@@ -73,6 +74,9 @@ pub fn draw(
 
     // Background + faint neon frame. Mode-aware as of v0.3 (dark scope / paper).
     painter.rect_filled(rect, 6.0, theme::canvas_bg());
+    // SHOW eye-candy renders as the deepest layer; grid + analyzers + the EQ
+    // curve stack on top so the canvas stays interactive.
+    show.draw(&painter, rect, viz, rainbow);
     draw_grid(&painter, rect);
 
     // Stackable realtime overlays (any combination), back to front.

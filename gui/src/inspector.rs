@@ -7,7 +7,7 @@
 use eframe::egui;
 use tronteq_shared::Dynamics;
 
-use crate::{curve, devices, knob, presets, profiles, theme, App};
+use crate::{curve, devices, knob, presets, profiles, show, theme, App};
 
 /// Which inspector tab is open. Persisted in settings.json by name.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut chain_changed = false;
     let mut layers = app.layers;
     let mut rainbow = app.rainbow;
+    let mut show_mode = app.show.mode;
     let mut sel_device = app.selected_device;
     let mut do_apply = false;
     let mut do_refresh = false;
@@ -62,7 +63,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 match tab {
                     Tab::Chain => chain_tab(ui, &mut preamp, &mut d, &mut chain_changed),
-                    Tab::Viz => viz_tab(ui, &mut layers, &mut rainbow),
+                    Tab::Viz => viz_tab(ui, &mut layers, &mut rainbow, &mut show_mode),
                     Tab::Setup => setup_tab(
                         ui,
                         ctx,
@@ -80,6 +81,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     app.tab = tab;
     app.layers = layers;
     app.rainbow = rainbow;
+    app.show.mode = show_mode;
     app.selected_device = sel_device;
     if do_refresh {
         app.devices = devices::list().unwrap_or_default();
@@ -205,9 +207,14 @@ fn chain_tab(ui: &mut egui::Ui, preamp: &mut f32, d: &mut Dynamics, changed: &mu
     });
 }
 
-/// ANALYZE = the data layers stacked behind the EQ curve. SHOW (full-canvas
-/// eye-candy modes) slots in under its own header next session.
-fn viz_tab(ui: &mut egui::Ui, layers: &mut curve::Layers, rainbow: &mut bool) {
+/// ANALYZE = the data layers stacked behind the EQ curve. SHOW = full-canvas
+/// eye-candy, one mode at a time, drawn beneath everything.
+fn viz_tab(
+    ui: &mut egui::Ui,
+    layers: &mut curve::Layers,
+    rainbow: &mut bool,
+    show_mode: &mut show::ShowMode,
+) {
     ui.label(egui::RichText::new("ANALYZE").color(theme::cyan()).strong());
     ui.checkbox(&mut layers.spectrum, "Spectrum bars");
     ui.checkbox(&mut layers.peak_hold, "Peak-hold caps");
@@ -220,12 +227,13 @@ fn viz_tab(ui: &mut egui::Ui, layers: &mut curve::Layers, rainbow: &mut bool) {
     ui.checkbox(rainbow, "Rainbow mode");
     ui.separator();
     ui.label(egui::RichText::new("SHOW").color(theme::cyan()).strong());
+    for m in show::ShowMode::ALL {
+        ui.selectable_value(show_mode, m, m.label());
+    }
     ui.label(
-        egui::RichText::new(
-            "Full-canvas eye-candy modes land here next: bars XL, scope trails, spectrum tunnel. Winamp energy.",
-        )
-        .color(theme::muted())
-        .small(),
+        egui::RichText::new("One at a time. Beat-reactive, draws under the analyzers - turn ANALYZE layers off for pure eye candy.")
+            .color(theme::muted())
+            .small(),
     );
 }
 
@@ -328,5 +336,10 @@ fn setup_tab(
     ui.separator();
 
     ui.label(egui::RichText::new("STATUS").color(theme::cyan()).strong());
-    ui.label(format!("{} Hz  ·  state v{}", app.sample_rate as u32, app.state.version()));
+    ui.label(format!(
+        "{} Hz  ·  state v{}  ·  frame {:.1} ms",
+        app.sample_rate as u32,
+        app.state.version(),
+        app.frame_ms,
+    ));
 }
