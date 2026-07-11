@@ -16,6 +16,8 @@ windows = { workspace = true }
 tray-icon = "0.19"
 raw-window-handle = "0.6"
 rustfft = "6"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
 # Embeds the requireAdministrator manifest + the .exe icon (Trent's face).

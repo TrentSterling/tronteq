@@ -10,3 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 memmap2 = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

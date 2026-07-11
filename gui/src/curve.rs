@@ -10,8 +10,9 @@ use crate::dsp_preview;
 use crate::theme;
 
 /// Stackable realtime overlays drawn behind the EQ curve. Any combination can be
-/// on at once. `peak_hold` is a modifier on `spectrum`.
-#[derive(Clone, Copy)]
+/// on at once. Serialized into settings.json so the layer mix survives restarts.
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Layers {
     pub spectrum: bool,
     pub peak_hold: bool,

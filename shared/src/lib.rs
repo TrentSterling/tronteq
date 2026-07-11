@@ -10,6 +10,7 @@ use std::fs::OpenOptions;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::{MmapMut, MmapOptions};
+use serde::{Deserialize, Serialize};
 
 pub const STATE_FILE: &str = r"C:\ProgramData\TrontEq\state.bin";
 pub const STATE_DIR: &str = r"C:\ProgramData\TrontEq";
@@ -67,7 +68,8 @@ impl BandKind {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Band {
     pub freq: f32,
     pub gain: f32,
@@ -81,11 +83,18 @@ impl Band {
     }
 }
 
+impl Default for Band {
+    fn default() -> Self {
+        Band::flat(1000.0)
+    }
+}
+
 /// Dynamics-processing parameters (compressor, limiter, AGC). Appended to the
 /// IPC contract after the EQ section. `*_enabled` are u32 to keep 4-byte
 /// alignment clean (no implicit padding). Mirror in `apo/src/EqState.h`.
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Dynamics {
     pub comp_enabled: u32,
     pub comp_threshold_db: f32,
@@ -99,6 +108,12 @@ pub struct Dynamics {
     pub agc_enabled: u32,
     pub agc_target_db: f32,
     pub agc_max_gain_db: f32,
+}
+
+impl Default for Dynamics {
+    fn default() -> Self {
+        Dynamics::default_passive()
+    }
 }
 
 impl Dynamics {
@@ -324,6 +339,27 @@ mod tests {
         assert_eq!(std::mem::size_of::<Dynamics>(), 48);
         assert_eq!(std::mem::size_of::<Telemetry>(), 24);
         assert_eq!(STATE_BYTES - STATE_CORE_BYTES, 24);
+    }
+
+    #[test]
+    fn band_dynamics_serde_roundtrip() {
+        let mut b = Band::flat(123.0);
+        b.gain = -4.5;
+        b.kind = BandKind::Notch as u32;
+        let mut d = Dynamics::default_passive();
+        d.comp_enabled = 1;
+        d.comp_ratio = 3.5;
+
+        let bs = serde_json::to_string(&b).unwrap();
+        let ds = serde_json::to_string(&d).unwrap();
+        assert_eq!(serde_json::from_str::<Band>(&bs).unwrap(), b);
+        assert_eq!(serde_json::from_str::<Dynamics>(&ds).unwrap(), d);
+
+        // Forward-compat: fields missing from an old file fall back to defaults
+        // instead of failing the whole parse.
+        let d2: Dynamics = serde_json::from_str(r#"{"comp_ratio": 9.0}"#).unwrap();
+        assert_eq!(d2.comp_ratio, 9.0);
+        assert_eq!(d2.limiter_enabled, Dynamics::default_passive().limiter_enabled);
     }
 
     #[test]

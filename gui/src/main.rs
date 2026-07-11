@@ -9,6 +9,8 @@ mod devices;
 mod dsp_preview;
 mod knob;
 mod presets;
+mod profiles;
+mod settings;
 mod spectrogram;
 mod state_writer;
 mod theme;
@@ -156,6 +158,29 @@ struct App {
     /// doesn't freeze during the audio-service restart).
     apply_rx: Option<Receiver<std::result::Result<String, String>>>,
     device_status: Option<(bool, String)>, // (ok, message)
+
+    // Profiles + persisted UI settings
+    store: profiles::ProfileStore,
+    active_profile: Option<String>,
+    modal: Modal,
+    name_buf: String,
+    modal_focus: bool,
+    settings_cache: settings::AppSettings,
+}
+
+/// Which name-entry modal is open.
+enum Modal {
+    None,
+    SaveAs,
+    Rename { old: String },
+}
+
+/// Deferred profile-chip actions (can't mutate the store while iterating it).
+enum ProfileAction {
+    Load(String),
+    Overwrite(String),
+    StartRename(String),
+    Delete(String),
 }
 
 impl App {
@@ -201,6 +226,18 @@ impl App {
 
         let devices = devices::list().unwrap_or_default();
         let selected_device = devices.iter().position(|d| d.is_default).unwrap_or(0);
+
+        // Persisted UI settings + saved sound profiles. Theme/zoom apply before
+        // the first frame; the live chain still comes from state.bin (the APO is
+        // already running with it) - the active profile is just the UI marker.
+        let ui_settings = settings::AppSettings::load();
+        theme::set_mode(ctx, ui_settings.dark_mode);
+        ctx.set_zoom_factor(ui_settings.zoom);
+        let store = profiles::ProfileStore::load();
+        let active_profile = ui_settings
+            .active_profile
+            .clone()
+            .filter(|n| store.get(n).is_some());
 
         // System tray: close hides to tray (keeps the control panel alive, avoids
         // a UAC relaunch since the GUI is elevated).
@@ -278,9 +315,9 @@ impl App {
             preamp_db,
             dynamics,
             show_about: false,
-            rainbow: true,
+            rainbow: ui_settings.rainbow,
             viz: visualizer::Visualizer::start(),
-            layers: curve::Layers::default(),
+            layers: ui_settings.layers,
             spec_peaks: Vec::new(),
             loud_hist: Vec::new(),
             last_step: std::time::Instant::now(),
@@ -293,6 +330,12 @@ impl App {
             selected_device,
             apply_rx: None,
             device_status: None,
+            store,
+            active_profile,
+            modal: Modal::None,
+            name_buf: String::new(),
+            modal_focus: false,
+            settings_cache: ui_settings,
         };
         me.commit();
         Ok(me)
@@ -330,18 +373,6 @@ impl App {
             .write_state(&self.bands, self.bypass, self.preamp_db, &self.dynamics);
     }
 
-    fn reset_flat(&mut self) {
-        for (i, f) in DEFAULT_FREQS.iter().enumerate() {
-            self.bands[i] = Band {
-                freq: *f,
-                gain: 0.0,
-                q: 1.0,
-                kind: BandKind::Peak as u32,
-            };
-        }
-        self.commit();
-    }
-
     /// Reset the whole chain to defaults: flat EQ, 0 preamp, passive dynamics.
     fn reset_all(&mut self) {
         for (i, f) in DEFAULT_FREQS.iter().enumerate() {
@@ -356,11 +387,70 @@ impl App {
         self.dynamics = Dynamics::default_passive();
         self.commit();
     }
+
+    /// Load a saved profile into the live chain (bands + preamp + dynamics) and
+    /// push it to the APO.
+    fn apply_profile(&mut self, name: &str) {
+        let Some(p) = self.store.get(name).cloned() else { return };
+        self.bands = p.bands;
+        self.preamp_db = p.preamp_db;
+        self.dynamics = p.dynamics;
+        self.active_profile = Some(p.name);
+        self.commit();
+    }
+
+    /// Save the current sound as `name` (overwrite if it exists) and make it active.
+    fn save_current_as(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let order = self
+            .store
+            .get(name)
+            .map(|p| p.order)
+            .unwrap_or_else(|| self.store.next_order());
+        self.store.save(profiles::Profile {
+            schema: 1,
+            name: name.to_string(),
+            order,
+            bands: self.bands,
+            preamp_db: self.preamp_db,
+            dynamics: self.dynamics,
+        });
+        self.active_profile = Some(name.to_string());
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_apply();
+
+        // Number keys 1-9 quickswap profiles (skipped while a text field has focus).
+        if !ctx.wants_keyboard_input() {
+            const NUM_KEYS: [egui::Key; 9] = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+                egui::Key::Num9,
+            ];
+            let mut hit: Option<String> = None;
+            for (i, k) in NUM_KEYS.iter().enumerate() {
+                if ctx.input(|inp| inp.key_pressed(*k)) {
+                    if let Some(e) = self.store.entries.get(i) {
+                        hit = Some(e.profile.name.clone());
+                    }
+                }
+            }
+            if let Some(n) = hit {
+                self.apply_profile(&n);
+            }
+        }
 
         // Hide-to-tray on close (tray Show/Quit handled in the tray handlers).
         // Only if a tray exists, else we'd trap the window with no way back.
@@ -400,8 +490,65 @@ impl eframe::App for App {
                         .size(23.0),
                 );
                 ui.separator();
-                if ui.button("Flat").clicked() {
-                    self.reset_flat();
+                // Profile chips: click = load (keys 1-9 too), right-click = manage,
+                // `*` = tweaked since save. Factory chips are ordinary profiles.
+                let mut act: Option<ProfileAction> = None;
+                for e in &self.store.entries {
+                    let p = &e.profile;
+                    let active = self.active_profile.as_deref() == Some(p.name.as_str());
+                    let dirty = active && !p.matches(&self.bands, self.preamp_db, &self.dynamics);
+                    let label = if dirty { format!("{}*", p.name) } else { p.name.clone() };
+                    let resp = ui.selectable_label(active, label);
+                    let resp = if dirty {
+                        resp.on_hover_text("Tweaked since save. Click = reload saved, right-click = overwrite")
+                    } else {
+                        resp
+                    };
+                    if resp.clicked() {
+                        act = Some(ProfileAction::Load(p.name.clone()));
+                    }
+                    resp.context_menu(|ui| {
+                        if ui.button("Overwrite with current").clicked() {
+                            act = Some(ProfileAction::Overwrite(p.name.clone()));
+                            ui.close();
+                        }
+                        if ui.button("Rename...").clicked() {
+                            act = Some(ProfileAction::StartRename(p.name.clone()));
+                            ui.close();
+                        }
+                        ui.menu_button("Delete", |ui| {
+                            if ui.button(format!("Really delete \"{}\"", p.name)).clicked() {
+                                act = Some(ProfileAction::Delete(p.name.clone()));
+                                ui.close();
+                            }
+                        });
+                    });
+                }
+                if ui
+                    .button("+")
+                    .on_hover_text("Save current sound as a new profile")
+                    .clicked()
+                {
+                    self.modal = Modal::SaveAs;
+                    self.name_buf.clear();
+                    self.modal_focus = true;
+                }
+                if let Some(a) = act {
+                    match a {
+                        ProfileAction::Load(n) => self.apply_profile(&n),
+                        ProfileAction::Overwrite(n) => self.save_current_as(&n),
+                        ProfileAction::StartRename(n) => {
+                            self.name_buf = n.clone();
+                            self.modal = Modal::Rename { old: n };
+                            self.modal_focus = true;
+                        }
+                        ProfileAction::Delete(n) => {
+                            self.store.delete(&n);
+                            if self.active_profile.as_deref() == Some(n.as_str()) {
+                                self.active_profile = None;
+                            }
+                        }
+                    }
                 }
                 if ui
                     .button("Reset")
@@ -409,12 +556,7 @@ impl eframe::App for App {
                     .clicked()
                 {
                     self.reset_all();
-                }
-                for name in presets::EQ_PRESETS {
-                    if ui.button(name).clicked() {
-                        presets::apply_eq(&mut self.bands, name);
-                        self.commit();
-                    }
+                    self.active_profile = None;
                 }
                 let mut bypass = self.bypass;
                 if ui.checkbox(&mut bypass, "Bypass").changed() {
@@ -721,7 +863,95 @@ impl eframe::App for App {
             }
         });
 
+        // Save-as / rename modal (small centered window with a name field).
+        let modal_kind = match &self.modal {
+            Modal::None => None,
+            Modal::SaveAs => Some(None),
+            Modal::Rename { old } => Some(Some(old.clone())),
+        };
+        if let Some(rename_old) = modal_kind {
+            let is_rename = rename_old.is_some();
+            let title = if is_rename { "Rename profile" } else { "Save profile as" };
+            let mut do_apply = false;
+            let mut do_cancel = false;
+            let name_taken = {
+                let n = self.name_buf.trim();
+                !n.is_empty() && self.store.get(n).is_some() && rename_old.as_deref() != Some(n)
+            };
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut self.name_buf)
+                            .hint_text("profile name")
+                            .desired_width(200.0),
+                    );
+                    if self.modal_focus {
+                        edit.request_focus();
+                        self.modal_focus = false;
+                    }
+                    let name_ok = !self.name_buf.trim().is_empty() && !(is_rename && name_taken);
+                    if is_rename && name_taken {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "name already taken");
+                    } else if name_taken {
+                        ui.label(
+                            egui::RichText::new("existing profile - will overwrite")
+                                .color(theme::muted())
+                                .small(),
+                        );
+                    }
+                    let submit = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.horizontal(|ui| {
+                        let verb = if is_rename { "Rename" } else { "Save" };
+                        if ui.add_enabled(name_ok, egui::Button::new(verb)).clicked()
+                            || (submit && name_ok)
+                        {
+                            do_apply = true;
+                        }
+                        if ui.button("Cancel").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            if do_apply {
+                let new_name = self.name_buf.trim().to_string();
+                match rename_old {
+                    Some(old) => {
+                        let keep_active = self.active_profile.as_deref() == Some(old.as_str());
+                        self.store.rename(&old, &new_name);
+                        if keep_active {
+                            self.active_profile = Some(new_name);
+                        }
+                    }
+                    None => self.save_current_as(&new_name),
+                }
+                self.modal = Modal::None;
+            } else if do_cancel {
+                self.modal = Modal::None;
+            }
+        }
+
         about::show(ctx, &mut self.show_about, &mut self.about_icon);
+
+        // Persist UI settings on change. There is no clean shutdown hook (tray
+        // Quit is process::exit), so save-on-change is the only reliable path.
+        let cur = settings::AppSettings {
+            schema: 1,
+            dark_mode: theme::dark_mode(),
+            rainbow: self.rainbow,
+            layers: self.layers,
+            zoom: ctx.zoom_factor(),
+            active_profile: self.active_profile.clone(),
+            inspector_tab: self.settings_cache.inspector_tab.clone(),
+        };
+        if cur != self.settings_cache {
+            cur.save();
+            self.settings_cache = cur;
+        }
 
         // Repaint ~60fps when focused; throttle to ~20fps when alt-tabbed away so we
         // stop hammering the GPU for a window the user isn't watching. (Hidden-to-tray
