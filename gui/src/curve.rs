@@ -83,8 +83,12 @@ pub fn draw(
         }
     }
     if l.spectrum {
-        let peaks = if l.peak_hold { Some(viz.peaks) } else { None };
-        draw_spectrum(&painter, rect, viz.spectrum, peaks, rainbow);
+        draw_spectrum(&painter, rect, viz.spectrum, rainbow);
+    }
+    if l.peak_hold {
+        // Standalone: this used to live inside the spectrum branch, silently
+        // requiring the bars layer to be on for the Peak toggle to do anything.
+        draw_peak_caps(&painter, rect, viz.peaks);
     }
     if l.analyzer {
         draw_analyzer(&painter, rect, viz.spectrum, rainbow);
@@ -386,13 +390,7 @@ fn draw_spectro(painter: &egui::Painter, rect: Rect, tex: egui::TextureId) {
 /// Bars are already log-spaced (20 Hz..20 kHz), so bar index maps linearly to
 /// the curve's log-frequency X axis. Each bar is a vertical gradient (hot top,
 /// faint base) with a bright cap line.
-fn draw_spectrum(
-    painter: &egui::Painter,
-    rect: Rect,
-    bars: &[f32],
-    peaks: Option<&[f32]>,
-    rainbow: bool,
-) {
+fn draw_spectrum(painter: &egui::Painter, rect: Rect, bars: &[f32], rainbow: bool) {
     if bars.len() < 2 {
         return;
     }
@@ -447,21 +445,31 @@ fn draw_spectrum(
         );
     }
 
-    // Peak-hold markers (slow-falling caps above the bars; decay is GUI-side).
-    if let Some(peaks) = peaks {
-        for (b, &pv) in peaks.iter().enumerate() {
-            let vv = pv.clamp(0.0, 1.0);
-            if vv <= 0.004 {
-                continue;
-            }
-            let x0 = rect.left() + b as f32 * slot + gap * 0.5;
-            let x1 = rect.left() + (b + 1) as f32 * slot - gap * 0.5;
-            let y = bottom - vv * max_h;
-            painter.line_segment(
-                [Pos2::new(x0, y), Pos2::new(x1, y)],
-                Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 255, 255, 210)),
-            );
+}
+
+/// Peak-hold markers: slow-falling caps above the spectrum (decay is GUI-side).
+/// Draws standalone — floating dashes when the bars layer itself is off.
+fn draw_peak_caps(painter: &egui::Painter, rect: Rect, peaks: &[f32]) {
+    if peaks.len() < 2 {
+        return;
+    }
+    let n = peaks.len();
+    let bottom = rect.bottom();
+    let max_h = rect.height() * 0.92;
+    let slot = rect.width() / n as f32;
+    let gap = (slot * 0.16).clamp(0.5, 3.0);
+    for (b, &pv) in peaks.iter().enumerate() {
+        let vv = pv.clamp(0.0, 1.0);
+        if vv <= 0.004 {
+            continue;
         }
+        let x0 = rect.left() + b as f32 * slot + gap * 0.5;
+        let x1 = rect.left() + (b + 1) as f32 * slot - gap * 0.5;
+        let y = bottom - vv * max_h;
+        painter.line_segment(
+            [Pos2::new(x0, y), Pos2::new(x1, y)],
+            Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 255, 255, 210)),
+        );
     }
 }
 

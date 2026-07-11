@@ -7,6 +7,7 @@ mod about;
 mod curve;
 mod devices;
 mod dsp_preview;
+mod inspector;
 mod knob;
 mod presets;
 mod profiles;
@@ -166,6 +167,7 @@ struct App {
     name_buf: String,
     modal_focus: bool,
     settings_cache: settings::AppSettings,
+    tab: inspector::Tab,
 }
 
 /// Which name-entry modal is open.
@@ -335,6 +337,7 @@ impl App {
             modal: Modal::None,
             name_buf: String::new(),
             modal_focus: false,
+            tab: inspector::Tab::from_str(&ui_settings.inspector_tab),
             settings_cache: ui_settings,
         };
         me.commit();
@@ -474,6 +477,10 @@ impl eframe::App for App {
             return;
         }
 
+        // Read APO telemetry up front: the toolbar warning chip and the bottom
+        // meter both use it.
+        let tel = self.state.telemetry();
+
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
@@ -550,29 +557,11 @@ impl eframe::App for App {
                         }
                     }
                 }
-                if ui
-                    .button("Reset")
-                    .on_hover_text("Reset the whole chain (EQ + preamp + dynamics) to defaults")
-                    .clicked()
-                {
-                    self.reset_all();
-                    self.active_profile = None;
-                }
                 let mut bypass = self.bypass;
                 if ui.checkbox(&mut bypass, "Bypass").changed() {
                     self.bypass = bypass;
                     self.commit();
                 }
-                ui.checkbox(&mut self.rainbow, "Rainbow");
-                ui.label(egui::RichText::new("Viz").color(theme::muted()));
-                let g = &mut self.layers;
-                ui.toggle_value(&mut g.spectrum, "Spec").on_hover_text("Spectrum bars");
-                ui.toggle_value(&mut g.peak_hold, "Peak").on_hover_text("Peak-hold caps");
-                ui.toggle_value(&mut g.analyzer, "Line").on_hover_text("Analyzer line");
-                ui.toggle_value(&mut g.waterfall, "Fall").on_hover_text("Spectrogram waterfall");
-                ui.toggle_value(&mut g.waveform, "Wave").on_hover_text("Waveform");
-                ui.toggle_value(&mut g.goniometer, "Gonio").on_hover_text("Stereo goniometer");
-                ui.toggle_value(&mut g.loudness, "Loud").on_hover_text("Loudness history");
                 if ui
                     .button(if theme::dark_mode() { "Light" } else { "Dark" })
                     .on_hover_text("Toggle light / dark theme")
@@ -580,82 +569,32 @@ impl eframe::App for App {
                 {
                     theme::set_mode(ctx, !theme::dark_mode());
                 }
-                ui.separator();
-                ui.label(format!("{} Hz", self.sample_rate as u32));
-                ui.label(format!("v{}", self.state.version()));
                 if ui.button("About").clicked() {
                     self.show_about = true;
                 }
-                ui.separator();
-                // UI zoom: -, current %, + (middle resets to 100%).
-                let zoom = ctx.zoom_factor();
-                if ui.button("-").on_hover_text("Zoom out").clicked() {
-                    ctx.set_zoom_factor((zoom - 0.1).max(0.5));
-                }
-                if ui
-                    .button(format!("{}%", (zoom * 100.0).round() as i32))
-                    .on_hover_text("Reset zoom to 100%")
-                    .clicked()
-                {
-                    ctx.set_zoom_factor(1.0);
-                }
-                if ui.button("+").on_hover_text("Zoom in").clicked() {
-                    ctx.set_zoom_factor((zoom + 0.1).min(2.0));
-                }
-            });
-
-            // Output device picker: pick where the EQ runs and apply it there.
-            ui.horizontal(|ui| {
-                let busy = self.apply_rx.is_some();
-                ui.label("Output:");
-                let selected = self
-                    .devices
-                    .get(self.selected_device)
-                    .map(|d| d.name.clone())
-                    .unwrap_or_else(|| "—".to_string());
-                egui::ComboBox::from_id_salt("device_picker")
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        for (i, d) in self.devices.iter().enumerate() {
-                            let label = if d.is_default {
-                                format!("{}  (default)", d.name)
-                            } else {
-                                d.name.clone()
-                            };
-                            ui.selectable_value(&mut self.selected_device, i, label);
-                        }
-                    });
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Apply EQ here"))
-                    .on_hover_text("Install the APO onto this output (elevated)")
-                    .clicked()
-                {
-                    self.start_apply();
-                }
-                if ui.add_enabled(!busy, egui::Button::new("⟳")).on_hover_text("Refresh device list").clicked() {
-                    self.devices = devices::list().unwrap_or_default();
-                    self.selected_device =
-                        self.selected_device.min(self.devices.len().saturating_sub(1));
-                }
-                if busy {
-                    ui.spinner();
-                }
-                if let Some((ok, msg)) = &self.device_status {
-                    let color = if *ok {
-                        egui::Color32::from_rgb(140, 220, 140)
-                    } else {
-                        egui::Color32::LIGHT_RED
-                    };
-                    ui.colored_label(color, msg);
+                // The APO heartbeats telemetry every buffer; silence means the EQ
+                // isn't processing (not applied to the default output, or an old
+                // APO build without telemetry support).
+                if tel.seq == 0 {
+                    let warn = egui::RichText::new("! EQ silent")
+                        .color(egui::Color32::from_rgb(255, 170, 90));
+                    if ui
+                        .button(warn)
+                        .on_hover_text(
+                            "No telemetry from the EQ on this output.\nOpen SETUP and hit \"Apply EQ here\".",
+                        )
+                        .clicked()
+                    {
+                        self.tab = inspector::Tab::Setup;
+                    }
                 }
             });
         });
 
-        // Meter source: prefer the APO's real pre/post-chain telemetry (true in vs
-        // out). Fall back to the WASAPI-loopback output level when the APO isn't
-        // publishing (older DLL, or not applied to this output) so the meter still
-        // shows something.
-        let tel = self.state.telemetry();
+        // Meter source: prefer the APO's real pre/post-chain telemetry (true in
+        // vs out; read above the toolbar). Fall back to the WASAPI-loopback
+        // output level when the APO isn't publishing so the meter still shows
+        // something.
         let (vrms, vpeak) = self.viz.level();
         egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -667,7 +606,9 @@ impl eframe::App for App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if tel.seq > 0 {
                         inout_meter(ui, tel.in_rms, tel.in_peak, tel.out_rms, tel.out_peak);
-                        ui.label(egui::RichText::new("IN→OUT").color(theme::muted()).small());
+                        // ASCII on purpose: U+2192 has no coverage in Rajdhani
+                        // and renders as a tofu box.
+                        ui.label(egui::RichText::new("IN>OUT").color(theme::muted()).small());
                         if tel.gr_db > 0.2 {
                             ui.label(
                                 egui::RichText::new(format!("GR -{:.1} dB", tel.gr_db))
@@ -684,107 +625,8 @@ impl eframe::App for App {
             });
         });
 
-        // Mutate Copy locals inside the panel closure, then write back + commit
-        // after it closes (avoids borrowing self inside nested egui closures).
-        let mut preamp = self.preamp_db;
-        let mut d = self.dynamics;
-        let mut changed = false;
-        egui::SidePanel::right("chain")
-            .resizable(false)
-            .default_width(264.0)
-            .show(ctx, |ui| {
-                let comp_acc = theme::cyan();
-                let lim_acc = egui::Color32::from_rgb(255, 120, 120);
-                let agc_acc = theme::ok();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("SIGNAL CHAIN").color(theme::cyan()).strong());
-                    ui.separator();
-
-                    // Preamp
-                    ui.horizontal(|ui| {
-                        ui.label("Preamp");
-                        if ui.button("↺").on_hover_text("reset preamp").clicked() {
-                            preamp = 0.0;
-                            changed = true;
-                        }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        changed |= knob::knob(ui, &mut preamp, -24.0..=24.0, "gain", " dB", 1, false, theme::cyan());
-                    });
-                    ui.separator();
-
-                    // Compressor
-                    let mut comp_on = d.comp_enabled != 0;
-                    if ui.checkbox(&mut comp_on, "Compressor").changed() {
-                        d.comp_enabled = comp_on as u32;
-                        changed = true;
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        for name in presets::COMP_PRESETS {
-                            if ui.button(name).clicked() { presets::apply_comp(&mut d, name); changed = true; }
-                        }
-                        if ui.button("↺").on_hover_text("reset compressor").clicked() { presets::reset_comp(&mut d); changed = true; }
-                    });
-                    comp_on = d.comp_enabled != 0;
-                    ui.add_enabled_ui(comp_on, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            changed |= knob::knob(ui, &mut d.comp_threshold_db, -60.0..=0.0, "thresh", " dB", 0, false, comp_acc);
-                            changed |= knob::knob(ui, &mut d.comp_ratio, 1.0..=20.0, "ratio", ":1", 1, false, comp_acc);
-                            changed |= knob::knob(ui, &mut d.comp_attack_ms, 0.1..=200.0, "attack", " ms", 1, true, comp_acc);
-                            changed |= knob::knob(ui, &mut d.comp_release_ms, 10.0..=1000.0, "release", " ms", 0, true, comp_acc);
-                            changed |= knob::knob(ui, &mut d.comp_makeup_db, 0.0..=24.0, "makeup", " dB", 1, false, comp_acc);
-                        });
-                    });
-                    ui.separator();
-
-                    // Limiter
-                    let mut lim_on = d.limiter_enabled != 0;
-                    if ui.checkbox(&mut lim_on, "Limiter").changed() {
-                        d.limiter_enabled = lim_on as u32;
-                        changed = true;
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        for name in presets::LIMITER_PRESETS {
-                            if ui.button(name).clicked() { presets::apply_limiter(&mut d, name); changed = true; }
-                        }
-                        if ui.button("↺").on_hover_text("reset limiter").clicked() { presets::reset_limiter(&mut d); changed = true; }
-                    });
-                    lim_on = d.limiter_enabled != 0;
-                    ui.add_enabled_ui(lim_on, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            changed |= knob::knob(ui, &mut d.limiter_ceiling_db, -12.0..=0.0, "ceiling", " dB", 1, false, lim_acc);
-                        });
-                    });
-                    ui.separator();
-
-                    // Auto-loudness
-                    let mut agc_on = d.agc_enabled != 0;
-                    if ui.checkbox(&mut agc_on, "Auto-loudness").changed() {
-                        d.agc_enabled = agc_on as u32;
-                        changed = true;
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        for name in presets::AGC_PRESETS {
-                            if ui.button(name).clicked() { presets::apply_agc(&mut d, name); changed = true; }
-                        }
-                        if ui.button("↺").on_hover_text("reset auto-loudness").clicked() { presets::reset_agc(&mut d); changed = true; }
-                    });
-                    agc_on = d.agc_enabled != 0;
-                    ui.add_enabled_ui(agc_on, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            changed |= knob::knob(ui, &mut d.agc_target_db, -30.0..=-6.0, "target", " dB", 0, false, agc_acc);
-                            changed |= knob::knob(ui, &mut d.agc_max_gain_db, 0.0..=36.0, "max gain", " dB", 0, false, agc_acc);
-                        });
-                    });
-                    ui.add_space(8.0);
-                });
-            });
-        if changed {
-            self.preamp_db = preamp;
-            self.dynamics = d;
-            self.commit();
-        }
+        // Right-side inspector: CHAIN / VIZ / SETUP tabs.
+        inspector::show(self, ctx);
 
         let wave = self.viz.snapshot();
         let spectrum = self.viz.spectrum();
@@ -946,7 +788,7 @@ impl eframe::App for App {
             layers: self.layers,
             zoom: ctx.zoom_factor(),
             active_profile: self.active_profile.clone(),
-            inspector_tab: self.settings_cache.inspector_tab.clone(),
+            inspector_tab: self.tab.as_str().to_string(),
         };
         if cur != self.settings_cache {
             cur.save();

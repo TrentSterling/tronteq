@@ -36,6 +36,19 @@ Two buckets, decided today:
 
 Checked boards for the bluetooth man-in-the-middle / handheld sound driver dongle idea: most ESP32s don't have all the hardware in one package, two boards do, could roll a custom board but kicad skills not there yet. Non-ESP32 options exist. Verdict for now: too much effort when Windows dev test mode already works. ¯\_(ツ)_/¯
 
+## Live bug reports mid-session
+
+- "in out vu meter has a white rectangle" — the IN→OUT meter label used a real
+  `→` (U+2192), which has zero coverage in Rajdhani. The tofu box strikes again
+  (same gotcha as the About-tab arrow last month). Fixed to ASCII `IN>OUT`.
+  Standing rule reaffirmed: egui + custom font = ASCII or proven glyphs only.
+- Performance: "I generally have a good framerate its not always perfectly
+  stable and Im on a BEAST RIG... I got boxel running on a mullins apu from a
+  decade or more ago lmao." Perf pass queued (per-frame Vec clones, waterfall
+  texture uploads, repaint timer granularity are the suspects).
+- Tauri thought: "frankly Id do a tauri rewrite if it wasnt for the fact I like
+  egui" — egui stays, but the itch is on record.
+
 ## Stray quotes
 
 - "we cookin more trontEQ even though it will never release (might port to linux tho)"
