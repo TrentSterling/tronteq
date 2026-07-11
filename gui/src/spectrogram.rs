@@ -14,11 +14,13 @@ const ROWS: usize = 180; // time history depth
 pub struct Spectrogram {
     rows: VecDeque<Vec<f32>>,
     tex: Option<TextureHandle>,
+    dirty: bool,        // a new row landed (or color mode changed) since last upload
+    last_rainbow: bool, // detect a rainbow toggle so we recolor on the next upload
 }
 
 impl Spectrogram {
     pub fn new() -> Self {
-        Self { rows: VecDeque::with_capacity(ROWS), tex: None }
+        Self { rows: VecDeque::with_capacity(ROWS), tex: None, dirty: false, last_rainbow: true }
     }
 
     /// Push the latest spectrum bars as the newest (top) row.
@@ -30,15 +32,31 @@ impl Spectrogram {
         while self.rows.len() > ROWS {
             self.rows.pop_back();
         }
+        self.dirty = true;
     }
 
-    /// Rebuild + upload the texture, returning its id for `painter.image`.
+    /// Return the texture id for `painter.image`, rebuilding + re-uploading only
+    /// when a new row landed or the color mode flipped. Skipping redundant uploads
+    /// is what keeps GPU work down between history steps (and while unfocused).
     pub fn texture(&mut self, ctx: &egui::Context, rainbow: bool) -> Option<TextureId> {
+        if rainbow != self.last_rainbow {
+            self.last_rainbow = rainbow;
+            self.dirty = true;
+        }
+        if !self.dirty {
+            if let Some(t) = &self.tex {
+                return Some(t.id());
+            }
+        }
         let w = self.rows.front()?.len();
         let h = ROWS;
         let mut bytes = vec![0u8; w * h * 4];
         for (r, row) in self.rows.iter().enumerate() {
-            for (c, &v) in row.iter().enumerate() {
+            // Clamp to `w` (the newest row's width / texture stride). Older rows that
+            // differ in length (a future bar-count change, or a transient short/empty
+            // spectrum) would otherwise let `c` run past the stride and write out of
+            // `bytes` -> an instant abort on the GUI thread.
+            for (c, &v) in row.iter().take(w).enumerate() {
                 let col = color_for(c, w, v, rainbow);
                 let o = (r * w + c) * 4;
                 bytes[o] = col.r();
@@ -52,6 +70,7 @@ impl Spectrogram {
             .tex
             .get_or_insert_with(|| ctx.load_texture("tronteq-spectro", img.clone(), TextureOptions::LINEAR));
         tex.set(img, TextureOptions::LINEAR);
+        self.dirty = false;
         Some(tex.id())
     }
 }

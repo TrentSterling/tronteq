@@ -72,6 +72,10 @@ Drag a band up, hear the change instantly.
 cargo run -p tronteq-cli -- uninstall
 ```
 
+## Credits
+
+- **aFoolsDuty**: ideas + inspiration; the hardware-dongle escape hatch from the signing problem was his call first.
+
 ## License
 
 MIT. See `LICENSE`.

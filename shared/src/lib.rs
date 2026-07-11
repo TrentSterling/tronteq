@@ -13,7 +13,11 @@ use memmap2::{MmapMut, MmapOptions};
 
 pub const STATE_FILE: &str = r"C:\ProgramData\TrontEq\state.bin";
 pub const STATE_DIR: &str = r"C:\ProgramData\TrontEq";
-pub const STATE_BYTES: usize = 192;
+/// Full file size: GUI-owned state (seqlock) + APO-owned telemetry block.
+pub const STATE_BYTES: usize = 216;
+/// State portion only (version + bands + preamp + dynamics). The APO can read
+/// this much from an older file even before the GUI extends it to STATE_BYTES.
+pub const STATE_CORE_BYTES: usize = 192;
 pub const NUM_BANDS: usize = 8;
 
 #[repr(u32)]
@@ -116,6 +120,23 @@ impl Dynamics {
     }
 }
 
+/// Meter telemetry written by the APO and read by the GUI (APO -> GUI, the reverse
+/// of the seqlock state). Plain f32s refreshed every audio buffer; no seqlock —
+/// a 4-byte aligned f32 read/write is atomic and minor tearing across fields is
+/// cosmetic on a meter. `seq` bumps every buffer so the GUI can tell the APO is
+/// actively processing (vs a stale / all-zero block from an un-upgraded APO).
+/// Mirror in `apo/src/EqState.h`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Telemetry {
+    pub seq: u32,     // increments per processed buffer (0 = APO never wrote)
+    pub in_peak: f32, // pre-chain (input) peak, linear
+    pub in_rms: f32,  // pre-chain RMS, linear
+    pub out_peak: f32, // post-chain (output) peak, linear
+    pub out_rms: f32,  // post-chain RMS, linear
+    pub gr_db: f32,    // dynamics gain reduction, dB >= 0
+}
+
 #[repr(C)]
 pub struct EqState {
     pub version: AtomicU64,
@@ -124,11 +145,15 @@ pub struct EqState {
     pub bypass: u8,
     pub _pad: [u8; 3],
     pub dynamics: Dynamics,
+    pub telemetry: Telemetry, // APO-written; not under the seqlock
 }
 
 const _: () = {
     assert!(std::mem::size_of::<EqState>() == STATE_BYTES);
     assert!(std::mem::align_of::<EqState>() == 8);
+    // Telemetry must start exactly at the end of the legacy 192-byte state so an
+    // un-extended file keeps working and only the appended bytes are new.
+    assert!(std::mem::size_of::<Telemetry>() == STATE_BYTES - STATE_CORE_BYTES);
 };
 
 pub const DEFAULT_FREQS: [f32; NUM_BANDS] =
@@ -147,6 +172,7 @@ impl EqState {
             bypass: 0,
             _pad: [0; 3],
             dynamics: Dynamics::default_passive(),
+            telemetry: Telemetry::default(),
         }
     }
 }
@@ -233,6 +259,13 @@ impl StateHandle {
         }
     }
 
+    /// Read the APO-written meter telemetry. Volatile (another process writes it)
+    /// and lock-free — meter tearing is cosmetic, so no seqlock. `seq == 0` means
+    /// the APO has never written (e.g. an APO build without telemetry support).
+    pub fn telemetry(&self) -> Telemetry {
+        unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*self.ptr).telemetry)) }
+    }
+
     /// Write a new state (seqlock writer).
     pub fn write(&self, update: impl FnOnce(&mut EqStateWrite)) {
         unsafe {
@@ -289,6 +322,8 @@ mod tests {
         assert_eq!(std::mem::align_of::<EqState>(), 8);
         assert_eq!(std::mem::size_of::<Band>(), 16);
         assert_eq!(std::mem::size_of::<Dynamics>(), 48);
+        assert_eq!(std::mem::size_of::<Telemetry>(), 24);
+        assert_eq!(STATE_BYTES - STATE_CORE_BYTES, 24);
     }
 
     #[test]

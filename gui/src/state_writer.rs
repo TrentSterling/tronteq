@@ -1,7 +1,7 @@
 //! Thin wrapper around tronteq_shared::StateHandle that tracks version for UI.
 
 use anyhow::Result;
-use tronteq_shared::{Band, Dynamics, Snapshot, StateHandle, NUM_BANDS};
+use tronteq_shared::{Band, Dynamics, Snapshot, StateHandle, Telemetry, NUM_BANDS};
 
 pub struct StateWriter {
     handle: StateHandle,
@@ -17,6 +17,11 @@ impl StateWriter {
 
     pub fn snapshot(&self) -> Snapshot {
         self.handle.snapshot()
+    }
+
+    /// APO-written meter telemetry (`seq == 0` ⇒ APO not publishing).
+    pub fn telemetry(&self) -> Telemetry {
+        self.handle.telemetry()
     }
 
     pub fn write_state(

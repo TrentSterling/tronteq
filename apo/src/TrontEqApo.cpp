@@ -210,8 +210,22 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
         if (outBuf != inBuf) {
             std::memset(outBuf, 0, sampleCount * sizeof(float));
         }
+        m_shared.WriteTelemetry(0.0f, 0.0f, 0.0f, 0.0f, 0.0f); // meters fall to silence
         return;
     }
+
+    // Meter the input (pre-chain) for the GUI's in/out VU. Cheap: one pass over a
+    // few hundred samples, no syscalls (RT-safe).
+    float inPeak = 0.0f;
+    double inSq = 0.0;
+    for (std::size_t i = 0; i < sampleCount; ++i) {
+        float v = inBuf[i];
+        if (!std::isfinite(v)) v = 0.0f;
+        const float a = std::fabs(v);
+        if (a > inPeak) inPeak = a;
+        inSq += static_cast<double>(v) * v;
+    }
+    const float inRms = sampleCount ? static_cast<float>(std::sqrt(inSq / sampleCount)) : 0.0f;
 
     // APO_FLAG_INPLACE is only a request — at the endpoint (EFX) stage the engine
     // gives us SEPARATE input/output buffers. Always emit to the output buffer;
@@ -221,7 +235,9 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     }
 
     if (m_cached.bypass != 0) {
-        return; // pass-through (output now holds the input)
+        // Pass-through: output == input, so the in/out meter shows no change.
+        m_shared.WriteTelemetry(inPeak, inRms, inPeak, inRms, 0.0f);
+        return;
     }
 
     RecomputeCoeffsIfDirty(m_cached.bands);
@@ -231,6 +247,14 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     preampDb = (std::max)(-24.0f, (std::min)(24.0f, preampDb));
     const float preGain = preampDb != 0.0f ? std::pow(10.0f, preampDb / 20.0f) : 1.0f;
     ProcessBlockFloat32(outBuf, in->u32ValidFrameCount, m_channels, preGain);
+
+    // Post-EQ RMS is the baseline for the gain-reduction meter: GR is how much the
+    // dynamics stage (next) pulls the level down from here.
+    double postEqSq = 0.0;
+    for (std::size_t i = 0; i < sampleCount; ++i) {
+        postEqSq += static_cast<double>(outBuf[i]) * outBuf[i];
+    }
+    const float postEqRms = sampleCount ? static_cast<float>(std::sqrt(postEqSq / sampleCount)) : 0.0f;
 
     // Dynamics: AGC -> compressor -> limiter. Clamp params first — they're POD from
     // the shared file and a finite-but-huge makeup/gain would otherwise make +Inf
@@ -252,7 +276,9 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     m_dynamics.Process(outBuf, in->u32ValidFrameCount, m_channels, dyn);
 
     // Final safety net: nothing reaches the DAC non-finite or past a hard ceiling,
-    // regardless of params or a poisoned biquad state.
+    // regardless of params or a poisoned biquad state. Meter the output here too.
+    float outPeak = 0.0f;
+    double outSq = 0.0;
     for (std::size_t i = 0; i < sampleCount; ++i) {
         float v = outBuf[i];
         if (!std::isfinite(v)) {
@@ -263,7 +289,21 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
             v = -4.0f;
         }
         outBuf[i] = v;
+        const float a = std::fabs(v);
+        if (a > outPeak) outPeak = a;
+        outSq += static_cast<double>(v) * v;
     }
+    const float outRms = sampleCount ? static_cast<float>(std::sqrt(outSq / sampleCount)) : 0.0f;
+
+    // Gain reduction = how much the dynamics stage pulled the level below post-EQ.
+    // Only count reduction (makeup/AGC boost is not "reduction").
+    float grDb = 0.0f;
+    if (postEqRms > 1e-7f && outRms > 1e-7f && postEqRms > outRms) {
+        grDb = 20.0f * std::log10(postEqRms / outRms);
+        if (grDb < 0.0f) grDb = 0.0f;
+    }
+
+    m_shared.WriteTelemetry(inPeak, inRms, outPeak, outRms, grDb);
 }
 
 } // namespace tronteq

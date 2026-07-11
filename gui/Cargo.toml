@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 tronteq-shared = { path = "../shared" }
-eframe = { workspace = true, features = ["wgpu"] }
+eframe = { workspace = true, features = ["glow"] }
 egui = { workspace = true }
 anyhow = { workspace = true }
 windows = { workspace = true }

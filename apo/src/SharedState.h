@@ -25,12 +25,17 @@ public:
     // Return true if state came from the file, false if defaults were used.
     bool Read(EqState& out) const;
 
+    // Publish meter levels back to the GUI. No-op unless the mapping is writable
+    // (file opened RW + full-size). RT-safe: plain memory writes, no syscalls.
+    void WriteTelemetry(float inPeak, float inRms, float outPeak, float outRms, float grDb);
+
     bool IsOpen() const { return m_view != nullptr; }
 
 private:
     HANDLE m_file = INVALID_HANDLE_VALUE;
     HANDLE m_mapping = nullptr;
     EqState* m_view = nullptr;
+    bool m_writable = false; // true when telemetry can be written back
 };
 
 // Populate `out` with flat bands at the POC default frequencies + bypass on.

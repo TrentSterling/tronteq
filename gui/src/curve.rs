@@ -230,6 +230,38 @@ fn rgba(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// Draw a connected polyline as ONE `Shape::line` (or a few hue chunks for the
+/// rainbow sweep) instead of N separate `line_segment` calls. N disjoint
+/// feathered segments was the geometry bomb that blew the GPU index buffer
+/// (~67k indices → staging-buffer alloc failure → panic=abort) on 2026-06-06: a
+/// connected line shares vertices at its joints and is a single draw, so this
+/// also lowers the steady wgpu buffer high-water-mark. For rainbow we split into
+/// a small fixed number of connected hue chunks (overlapping by a point so they
+/// join) rather than one segment per hue.
+fn glow_line(painter: &egui::Painter, pts: &[Pos2], width: f32, alpha: u8, rainbow: bool) {
+    if pts.len() < 2 {
+        return;
+    }
+    if !rainbow {
+        let col = Color32::from_rgba_unmultiplied(150, 240, 255, alpha);
+        painter.add(egui::Shape::line(pts.to_vec(), Stroke::new(width, col)));
+        return;
+    }
+    const CHUNKS: usize = 24;
+    let n = pts.len();
+    let step = (n / CHUNKS).max(1);
+    let mut i = 0;
+    while i < n - 1 {
+        let end = (i + step).min(n - 1);
+        let hue = theme::hsv((i as f32 + 0.5) / n as f32, 0.85, 1.0);
+        painter.add(egui::Shape::line(
+            pts[i..=end].to_vec(),
+            Stroke::new(width, rgba(hue, alpha)),
+        ));
+        i = end;
+    }
+}
+
 fn band_color_from(kind: u32) -> Color32 {
     match BandKind::from_u32(kind) {
         BandKind::Peak => Color32::from_rgb(80, 220, 255),
@@ -450,9 +482,8 @@ fn draw_waveform(painter: &egui::Painter, rect: Rect, wave: &[f32], rainbow: boo
     } else {
         Color32::from_rgba_unmultiplied(0, 224, 255, 46)
     };
-    for win in pts.windows(2) {
-        painter.line_segment([win[0], win[1]], Stroke::new(1.0, col));
-    }
+    // One connected path, not ~2000 separate feathered segments.
+    painter.add(egui::Shape::line(pts, Stroke::new(1.0, col)));
 }
 
 /// Smooth filled analyzer curve through the spectrum bar tops (FabFilter-style),
@@ -486,14 +517,7 @@ fn draw_analyzer(painter: &egui::Painter, rect: Rect, bars: &[f32], rainbow: boo
 
     let pts: Vec<Pos2> = (0..n).map(|b| Pos2::new(px(b), py(bars[b]))).collect();
     for (w, a) in [(6.0_f32, 26_u8), (3.0, 80), (1.8, 255)] {
-        for i in 0..pts.len() - 1 {
-            let col = if rainbow {
-                rgba(hue(i), a)
-            } else {
-                Color32::from_rgba_unmultiplied(150, 240, 255, a)
-            };
-            painter.line_segment([pts[i], pts[i + 1]], Stroke::new(w, col));
-        }
+        glow_line(painter, &pts, w, a, rainbow);
     }
 }
 
@@ -522,15 +546,28 @@ fn draw_goniometer(painter: &egui::Painter, rect: Rect, stereo: &[[f32; 2]]) {
         Stroke::new(1.0, guide),
     );
 
+    // Plot every point as a tiny quad in ONE mesh rather than ~1000 separate
+    // `circle_filled` fans (each its own feathered draw) — same dots, a fraction
+    // of the geometry.
     let n = stereo.len();
+    let r = 1.3;
+    let mut dots = egui::Mesh::default();
     for (i, &[lf, rf]) in stereo.iter().enumerate() {
         let mid = (lf + rf) * 0.7071;
         let side = (lf - rf) * 0.7071;
         let x = center.x + side.clamp(-1.0, 1.0) * half;
         let y = center.y - mid.clamp(-1.0, 1.0) * half;
         let a = (40 + i * 180 / n).min(220) as u8;
-        painter.circle_filled(Pos2::new(x, y), 1.3, Color32::from_rgba_unmultiplied(120, 240, 255, a));
+        let col = Color32::from_rgba_unmultiplied(120, 240, 255, a);
+        let v = dots.vertices.len() as u32;
+        dots.colored_vertex(Pos2::new(x - r, y - r), col);
+        dots.colored_vertex(Pos2::new(x + r, y - r), col);
+        dots.colored_vertex(Pos2::new(x + r, y + r), col);
+        dots.colored_vertex(Pos2::new(x - r, y + r), col);
+        dots.add_triangle(v, v + 1, v + 2);
+        dots.add_triangle(v, v + 2, v + 3);
     }
+    painter.add(egui::Shape::mesh(dots));
     painter.text(
         Pos2::new(center.x, center.y - half - 3.0),
         Align2::CENTER_BOTTOM,
@@ -574,12 +611,10 @@ fn draw_loudness(painter: &egui::Painter, rect: Rect, hist: &[f32], rainbow: boo
     painter.add(egui::Shape::mesh(mesh));
 
     let pts: Vec<Pos2> = (0..n).map(|i| Pos2::new(px(i), py(hist[i]))).collect();
-    for win in pts.windows(2) {
-        painter.line_segment(
-            [win[0], win[1]],
-            Stroke::new(1.5, Color32::from_rgba_unmultiplied(150, 240, 255, 200)),
-        );
-    }
+    painter.add(egui::Shape::line(
+        pts,
+        Stroke::new(1.5, Color32::from_rgba_unmultiplied(150, 240, 255, 200)),
+    ));
 }
 
 fn draw_composite(
@@ -621,15 +656,8 @@ fn draw_composite(
     }
     painter.add(egui::Shape::mesh(mesh));
 
-    // Glowing line: wide faint halo to a bright core (per-segment hue if rainbow).
+    // Glowing line: wide faint halo to a bright core, as connected paths.
     for (w, a) in [(7.5_f32, 24_u8), (4.0, 64), (2.2, 255)] {
-        for i in 0..pts.len() - 1 {
-            let col = if rainbow {
-                with_a(hue(i), a)
-            } else {
-                Color32::from_rgba_unmultiplied(150, 240, 255, a)
-            };
-            painter.line_segment([pts[i], pts[i + 1]], Stroke::new(w, col));
-        }
+        glow_line(painter, &pts, w, a, rainbow);
     }
 }

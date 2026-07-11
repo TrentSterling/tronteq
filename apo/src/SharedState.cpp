@@ -45,35 +45,57 @@ void SharedStateReader::Close() {
         CloseHandle(m_file);
         m_file = INVALID_HANDLE_VALUE;
     }
+    m_writable = false;
 }
 
 void SharedStateReader::TryOpen() {
     if (IsOpen()) return;
 
+    // Prefer read/write so we can publish meter telemetry back to the GUI. Falls
+    // back to read-only if the ProgramData ACL doesn't grant audiodg write (the EQ
+    // still works; only the in/out meter goes dark).
+    bool writable = true;
     HANDLE f = CreateFileW(
         kStatePath,
-        GENERIC_READ,
+        GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        writable = false;
+        f = CreateFileW(
+            kStatePath,
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+    }
     if (f == INVALID_HANDLE_VALUE) return;
 
     LARGE_INTEGER sz{};
-    if (!GetFileSizeEx(f, &sz) || sz.QuadPart < static_cast<LONGLONG>(kStateBytes)) {
+    // Need at least the core state to read; telemetry needs the full size.
+    if (!GetFileSizeEx(f, &sz) || sz.QuadPart < static_cast<LONGLONG>(kStateCoreBytes)) {
         CloseHandle(f);
         return;
     }
+    const bool telemetryFits = sz.QuadPart >= static_cast<LONGLONG>(kStateBytes);
+    const DWORD mapLen = static_cast<DWORD>(telemetryFits ? kStateBytes : kStateCoreBytes);
 
-    HANDLE m = CreateFileMappingW(f, nullptr, PAGE_READONLY, 0,
-                                  static_cast<DWORD>(kStateBytes), nullptr);
+    HANDLE m = CreateFileMappingW(f, nullptr,
+                                  writable ? PAGE_READWRITE : PAGE_READONLY,
+                                  0, mapLen, nullptr);
     if (!m) {
         CloseHandle(f);
         return;
     }
 
-    void* view = MapViewOfFile(m, FILE_MAP_READ, 0, 0, kStateBytes);
+    void* view = MapViewOfFile(m, writable ? (FILE_MAP_READ | FILE_MAP_WRITE)
+                                           : FILE_MAP_READ,
+                               0, 0, mapLen);
     if (!view) {
         CloseHandle(m);
         CloseHandle(f);
@@ -83,6 +105,21 @@ void SharedStateReader::TryOpen() {
     m_file = f;
     m_mapping = m;
     m_view = reinterpret_cast<EqState*>(view);
+    m_writable = writable && telemetryFits;
+}
+
+void SharedStateReader::WriteTelemetry(float inPeak, float inRms,
+                                       float outPeak, float outRms, float grDb) {
+    if (!m_view || !m_writable) return;
+    Telemetry& t = m_view->telemetry;
+    t.in_peak = inPeak;
+    t.in_rms = inRms;
+    t.out_peak = outPeak;
+    t.out_rms = outRms;
+    t.gr_db = grDb;
+    // Bump seq last so the GUI seeing a fresh seq also sees fresh values (any
+    // tearing within a single buffer is cosmetic on a meter).
+    t.seq = t.seq + 1;
 }
 
 bool SharedStateReader::Read(EqState& out) const {

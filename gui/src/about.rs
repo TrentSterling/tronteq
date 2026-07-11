@@ -115,6 +115,11 @@ pub fn show(
                         .small(),
                 );
                 ui.label(egui::RichText::new("Built with Rust + egui").color(theme::muted()).small());
+                ui.label(
+                    egui::RichText::new("ideas + inspiration: aFoolsDuty")
+                        .color(theme::muted())
+                        .small(),
+                );
                 ui.add_space(8.0);
                 if ui.button("Close").clicked() {
                     close_about = true;

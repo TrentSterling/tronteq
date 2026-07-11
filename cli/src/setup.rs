@@ -260,7 +260,9 @@ pub fn clear_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
 
 // ---- ProgramData ACL + audio service ----------------------------------------
 
-/// Grant the restricted audiodg token read access to the settings dir.
+/// Grant the restricted audiodg token access to the settings dir. Modify (not just
+/// read) so the APO can write its meter telemetry back into `state.bin` from inside
+/// audiodg's app-container token. The dev signing cert is re-protected below.
 pub fn grant_programdata_acl(dir: &str) -> Result<()> {
     let icacls = system32("icacls.exe");
     // ALL APPLICATION PACKAGES, ALL RESTRICTED APPLICATION PACKAGES, LOCAL SERVICE.
@@ -268,11 +270,11 @@ pub fn grant_programdata_acl(dir: &str) -> Result<()> {
         .args([
             dir,
             "/grant",
-            "*S-1-15-2-1:(OI)(CI)(RX)",
+            "*S-1-15-2-1:(OI)(CI)(M)",
             "/grant",
-            "*S-1-15-2-2:(OI)(CI)(RX)",
+            "*S-1-15-2-2:(OI)(CI)(M)",
             "/grant",
-            "*S-1-5-19:(OI)(CI)(RX)",
+            "*S-1-5-19:(OI)(CI)(M)",
             "/T",
             "/C",
         ])

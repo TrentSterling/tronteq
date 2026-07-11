@@ -1,15 +1,18 @@
 // EqState.h — C mirror of shared/src/lib.rs::EqState.
-// UPDATE BOTH if you change either. 192 bytes, 8-byte aligned (incl. preamp + dynamics).
+// UPDATE BOTH if you change either. 216 bytes, 8-byte aligned
+// (version + bands + preamp + dynamics + APO-written telemetry).
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <atomic>
 #include <type_traits>
 
 namespace tronteq {
 
 constexpr std::size_t kNumBands = 8;
-constexpr std::size_t kStateBytes = 192;
+constexpr std::size_t kStateBytes = 216;      // full file incl. telemetry
+constexpr std::size_t kStateCoreBytes = 192;  // state portion (no telemetry)
 
 enum class BandKind : uint32_t {
     Peak = 0,
@@ -47,6 +50,17 @@ struct Dynamics {
 };
 static_assert(sizeof(Dynamics) == 48, "Dynamics ABI drift");
 
+// Meter telemetry — mirror of shared/src/lib.rs::Telemetry. APO writes, GUI reads.
+struct Telemetry {
+    uint32_t seq;     // increments per processed buffer
+    float in_peak;    // pre-chain peak (linear)
+    float in_rms;     // pre-chain RMS
+    float out_peak;   // post-chain peak
+    float out_rms;    // post-chain RMS
+    float gr_db;      // dynamics gain reduction, dB >= 0
+};
+static_assert(sizeof(Telemetry) == 24, "Telemetry ABI drift");
+
 struct EqState {
     std::atomic<uint64_t> version;  // seqlock: odd=writing, even=committed
     Band bands[kNumBands];          // 128 bytes
@@ -54,8 +68,11 @@ struct EqState {
     uint8_t bypass;
     uint8_t _pad[3];
     Dynamics dynamics;
+    Telemetry telemetry;            // APO-written; not under the seqlock
 };
 static_assert(sizeof(EqState) == kStateBytes, "EqState ABI drift — mirror shared/src/lib.rs");
+static_assert(offsetof(EqState, telemetry) == kStateCoreBytes,
+    "telemetry must start at the end of the legacy 192-byte state");
 static_assert(alignof(EqState) == 8, "EqState must be 8-byte aligned for atomic version");
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
     "atomic<uint64_t> must be lock-free for seqlock to be RT-safe");

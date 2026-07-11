@@ -12,8 +12,8 @@ use std::time::Duration;
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
@@ -101,6 +101,16 @@ fn push_stereo(buf: &mut Vec<[f32; 2]>, v: [f32; 2]) {
     }
 }
 
+/// Endpoint id string of a render device (the returned PWSTR is freed). None on
+/// failure. Used to notice when the *default* endpoint changes out from under a
+/// live loopback session (a default swap does NOT error the session).
+unsafe fn endpoint_id(device: &IMMDevice) -> Option<String> {
+    let pw = device.GetId().ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const core::ffi::c_void));
+    s
+}
+
 fn push_ring(buf: &mut Vec<f32>, v: f32) {
     buf.push(v);
     let len = buf.len();
@@ -184,7 +194,9 @@ unsafe fn capture_loop(
 ) -> windows::core::Result<()> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     while !stop.load(Ordering::Relaxed) {
-        let _ = run_session(samples, spectrum, level, stereo, stop);
+        if let Err(e) = run_session(samples, spectrum, level, stereo, stop) {
+            crate::log_line(&format!("viz: capture session ended with error: {e:?}"));
+        }
         // Session ended (error or stop). Flatten the viz so it doesn't show stale
         // bars/levels, then pause before re-acquiring the (possibly new) default.
         if let Ok(mut sp) = spectrum.lock() {
@@ -216,6 +228,11 @@ unsafe fn run_session(
 ) -> windows::core::Result<()> {
     let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
     let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+    let opened_id = endpoint_id(&device);
+    crate::log_line(&format!(
+        "viz: capture session on default endpoint {}",
+        opened_id.as_deref().unwrap_or("<unknown>")
+    ));
     let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
 
     let pfmt = client.GetMixFormat()?;
@@ -274,7 +291,30 @@ unsafe fn run_session(
         }
     };
 
+    let mut last_default_poll = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        // A default-device SWAP between two still-enabled endpoints does NOT
+        // invalidate a loopback client bound to the old endpoint — it just goes
+        // silent (zero/silent packets, NO error), so the error-driven re-acquire in
+        // capture_loop never fires and the viz freezes on the dead endpoint. Poll
+        // the current default ~2x/sec and bail when it changed so capture_loop
+        // re-acquires the NEW default. (An enhancement toggle / format change still
+        // errors out via `?` as before; this covers the no-error case.)
+        if last_default_poll.elapsed() >= Duration::from_millis(500) {
+            last_default_poll = std::time::Instant::now();
+            if let Ok(cur) = enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
+                let cur_id = endpoint_id(&cur);
+                if let (Some(a), Some(b)) = (&opened_id, &cur_id) {
+                    if a != b {
+                        crate::log_line(&format!(
+                            "viz: default endpoint changed (was {a}, now {b}) -> re-acquiring"
+                        ));
+                        let _ = client.Stop();
+                        return Ok(());
+                    }
+                }
+            }
+        }
         loop {
             let packet = capture.GetNextPacketSize()?;
             if packet == 0 {

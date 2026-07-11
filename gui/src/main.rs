@@ -25,31 +25,68 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tronteq_shared::{Band, BandKind, Dynamics, DEFAULT_FREQS, NUM_BANDS};
 
-/// Write any Rust panic to a crash log before `panic = "abort"` kills us. The GUI
-/// runs on the windows subsystem (no console), so without this a panic vanishes
-/// as a bare 0xc0000409 in the Event Log with no message or location. The hook is
-/// global (fires for any thread, incl. the WASAPI capture thread), and the process
-/// is elevated, so it can append into ProgramData.
+/// Append a timestamped line to the diagnostic log. The GUI runs on the windows
+/// subsystem (no console) with `panic = "abort"`, so any panic OR clean-but-
+/// unexpected exit (e.g. eframe/wgpu returning Err on GPU device-loss) otherwise
+/// vanishes silently: a panic shows only as a bare 0xc0000409 in the Event Log,
+/// and an Err exit leaves no trace at all. Elevated, so it can append to ProgramData.
+pub(crate) fn log_line(msg: &str) {
+    use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(r"C:\ProgramData\TrontEq\crash.log")
+    {
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
+
+/// Process start time, used by the panic hook to decide whether a crash is a
+/// recoverable mid-session fault (relaunch) or a startup crash-loop (give up).
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Self-heal: re-spawn ourselves so a transient render fault doesn't leave the
+/// user with no control panel + no tray icon (which is exactly what happened on
+/// 2026-06-06: an egui-wgpu staging-buffer allocation failed → panic=abort →
+/// silent 0xc0000409, and nothing relaunched it). Render-side faults that abort
+/// the process this way — GPU device-loss on monitor sleep, a driver TDR, a
+/// momentary GPU/host OOM — are nearly always transient, so a fresh process
+/// comes straight back up healthy.
+///
+/// Guarded by uptime so we DON'T spin: a crash within the first 20s (e.g. a
+/// genuine startup bug, or a relaunch that immediately re-crashes because the
+/// fault is persistent) does not relaunch. So we recover once from a transient
+/// fault and stop if the relaunch can't survive — never a fork-bomb.
+fn maybe_relaunch() {
+    let up = START.get().map(|s| s.elapsed().as_secs()).unwrap_or(0);
+    if up < 20 {
+        log_line(&format!("self-heal: crash after {up}s uptime — NOT relaunching (looks like a startup loop)"));
+        return;
+    }
+    match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).spawn()) {
+        // Parent is elevated (requireAdministrator manifest), so this CreateProcess
+        // inherits the elevated token with no UAC prompt.
+        Ok(child) => log_line(&format!("self-heal: relaunched pid={} after {up}s uptime", child.id())),
+        Err(e) => log_line(&format!("self-heal: relaunch FAILED: {e}")),
+    }
+}
+
 fn install_crash_logger() {
+    START.get_or_init(std::time::Instant::now);
     std::panic::set_hook(Box::new(|info| {
-        use std::io::Write;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let line = format!("[{ts}] {info}\n");
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(r"C:\ProgramData\TrontEq\crash.log")
-        {
-            let _ = f.write_all(line.as_bytes());
-        }
+        log_line(&format!("PANIC: {info}"));
+        // Runs before the abort, so the replacement is spawned as we go down.
+        maybe_relaunch();
     }));
 }
 
 fn main() -> Result<()> {
     install_crash_logger();
+    log_line(&format!("start pid={}", std::process::id()));
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("TrontEQ")
         .with_inner_size([1000.0, 460.0])
@@ -60,17 +97,30 @@ fn main() -> Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport,
+        // Force the OpenGL (glow) backend. Both of this app's lifetime crashes were
+        // inside egui-wgpu on the DX12 path (write_buffer_with staging-buffer failure
+        // + an invalid Texture::create_view), and the app uses only renderer-agnostic
+        // egui APIs (painter + load_texture, zero wgpu callbacks/RenderState). glow
+        // uploads via glBufferSubData/glTexSubImage with no per-frame wgpu staging
+        // buffer, removing that entire failure class. Pinned explicitly so the choice
+        // can't silently flip back to wgpu if the wgpu feature is ever re-added (with
+        // both features on, Renderer::default() resolves to Wgpu).
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
-    eframe::run_native(
+    let run = eframe::run_native(
         "TrontEQ",
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(App::new(cc)?) as Box<dyn eframe::App>)
         }),
-    )
-    .map_err(|e| anyhow::anyhow!("eframe: {e:?}"))?;
+    );
+    match &run {
+        Ok(()) => log_line("exit: run_native -> Ok (window closed / normal return)"),
+        Err(e) => log_line(&format!("exit: run_native -> Err: {e:?}")),
+    }
+    run.map_err(|e| anyhow::anyhow!("eframe: {e:?}"))?;
     Ok(())
 }
 
@@ -90,6 +140,7 @@ struct App {
     layers: curve::Layers,
     spec_peaks: Vec<f32>, // peak-hold caps (instant rise, slow fall)
     loud_hist: Vec<f32>,  // rolling output RMS history
+    last_step: std::time::Instant, // wall-clock pacing for the history visualizers
     spectro: spectrogram::Spectrogram,
     about_icon: Option<egui::TextureHandle>,
 
@@ -170,6 +221,11 @@ impl App {
             tray_builder = tray_builder.with_icon(icon);
         }
         let tray = tray_builder.build().ok();
+        log_line(if tray.is_some() {
+            "tray: built ok"
+        } else {
+            "tray: FAILED to build (close will exit instead of hiding)"
+        });
 
         // Tracks shown vs hidden-to-tray so update() can drop to a slow idle
         // repaint instead of burning a core at 60fps with no window on screen.
@@ -188,6 +244,7 @@ impl App {
                     v.store(true, Ordering::Relaxed);
                     c.request_repaint();
                 } else if e.id == quit {
+                    log_line("exit: tray Quit -> process::exit(0)");
                     std::process::exit(0);
                 }
             }));
@@ -226,6 +283,7 @@ impl App {
             layers: curve::Layers::default(),
             spec_peaks: Vec::new(),
             loud_hist: Vec::new(),
+            last_step: std::time::Instant::now(),
             spectro: spectrogram::Spectrogram::new(),
             about_icon: None,
             _tray: tray,
@@ -310,6 +368,20 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             win::hide_window(self.app_hwnd);
             self.visible.store(false, Ordering::Relaxed);
+            log_line("hide to tray (close intercepted; process stays alive)");
+        }
+
+        // While hidden to tray, do NOT build any UI or upload textures. Rendering
+        // and re-uploading egui-managed textures (the spectrogram waterfall, the
+        // About icon) to the hidden window's wgpu surface is what killed the GUI on
+        // 2026-06-04: a managed texture went invalid and `Texture::create_view`
+        // panicked (wgpu validation error → 0xc0000409 via panic=abort, ~50min into
+        // being tray'd). Skipping the frame entirely removes the trigger and saves a
+        // core while tray'd. The tray Show/DoubleClick handlers flip `visible` back
+        // on and call request_repaint(), so showing is still instant.
+        if !self.visible.load(Ordering::Relaxed) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            return;
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -437,6 +509,12 @@ impl eframe::App for App {
             });
         });
 
+        // Meter source: prefer the APO's real pre/post-chain telemetry (true in vs
+        // out). Fall back to the WASAPI-loopback output level when the APO isn't
+        // publishing (older DLL, or not applied to this output) so the meter still
+        // shows something.
+        let tel = self.state.telemetry();
+        let (vrms, vpeak) = self.viz.level();
         egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let hint = "drag = gain  ·  shift-drag / scroll = Q  ·  ctrl-drag = frequency  ·  dbl-click = reset band  ·  right-click = type";
@@ -444,10 +522,22 @@ impl eframe::App for App {
                 if let Some(e) = &self.last_error {
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("· {e}"));
                 }
-                let (rms, peak) = self.viz.level();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    out_meter(ui, rms, peak);
-                    ui.label(egui::RichText::new("OUT").color(theme::muted()).small());
+                    if tel.seq > 0 {
+                        inout_meter(ui, tel.in_rms, tel.in_peak, tel.out_rms, tel.out_peak);
+                        ui.label(egui::RichText::new("IN→OUT").color(theme::muted()).small());
+                        if tel.gr_db > 0.2 {
+                            ui.label(
+                                egui::RichText::new(format!("GR -{:.1} dB", tel.gr_db))
+                                    .color(egui::Color32::from_rgb(255, 150, 90))
+                                    .small(),
+                            )
+                            .on_hover_text("Gain reduction from the dynamics stage");
+                        }
+                    } else {
+                        out_meter(ui, vrms, vpeak);
+                        ui.label(egui::RichText::new("OUT").color(theme::muted()).small());
+                    }
                 });
             });
         });
@@ -559,24 +649,45 @@ impl eframe::App for App {
         let stereo = self.viz.stereo();
         let (rms, _peak) = self.viz.level();
 
-        // Peak-hold caps: instant rise, slow fall.
+        // Advance the GUI-side history visualizers on a fixed ~60Hz wall-clock
+        // cadence rather than once-per-frame. This decouples scroll speed from how
+        // fast frames actually arrive: unfocused we render at ~20fps, and on focus
+        // regain winit can deliver a burst of coalesced repaints — a per-frame
+        // advance would rip the waterfall / loudness / peak-fall forward ("lag then
+        // fast-forward catch-up"). We step at most once per 16ms and snap the clock
+        // to now after a gap, so a backlog is dropped, not replayed.
+        const STEP: std::time::Duration = std::time::Duration::from_millis(16);
+        let stepped = self.last_step.elapsed() >= STEP;
+        if stepped {
+            self.last_step = std::time::Instant::now();
+        }
+
+        // Peak-hold caps: rise tracks the live spectrum every frame (caps never sit
+        // below a current bar); the slow fall is what we time-gate.
         if self.spec_peaks.len() != spectrum.len() {
             self.spec_peaks = spectrum.clone();
         } else {
             for (p, &s) in self.spec_peaks.iter_mut().zip(spectrum.iter()) {
-                *p = if s >= *p { s } else { (*p - 0.012).max(s) };
+                *p = if s >= *p {
+                    s
+                } else if stepped {
+                    (*p - 0.012).max(s)
+                } else {
+                    *p
+                };
             }
         }
 
-        // Loudness history ring (~8s at 60fps).
-        self.loud_hist.push(rms);
-        if self.loud_hist.len() > 480 {
-            let excess = self.loud_hist.len() - 480;
-            self.loud_hist.drain(0..excess);
-        }
-
-        if self.layers.waterfall {
-            self.spectro.push(&spectrum);
+        if stepped {
+            // Loudness history ring (~8s at 60Hz).
+            self.loud_hist.push(rms);
+            if self.loud_hist.len() > 480 {
+                let excess = self.loud_hist.len() - 480;
+                self.loud_hist.drain(0..excess);
+            }
+            if self.layers.waterfall {
+                self.spectro.push(&spectrum);
+            }
         }
         let spectro_tex = if self.layers.waterfall {
             self.spectro.texture(ctx, self.rainbow)
@@ -612,11 +723,72 @@ impl eframe::App for App {
 
         about::show(ctx, &mut self.show_about, &mut self.about_icon);
 
-        // Repaint fast (~60fps) when visible; drop to a slow idle tick when hidden
-        // to tray so we don't burn a core 24/7 with no window on screen.
-        let interval = if self.visible.load(Ordering::Relaxed) { 16 } else { 1000 };
+        // Repaint ~60fps when focused; throttle to ~20fps when alt-tabbed away so we
+        // stop hammering the GPU for a window the user isn't watching. (Hidden-to-tray
+        // already returned early far above.) Resume stays smooth because the history
+        // visualizers are wall-clock paced above — they don't fast-forward when frames
+        // jump back to 60fps.
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        let interval = if focused { 16 } else { 50 };
         ctx.request_repaint_after(std::time::Duration::from_millis(interval));
     }
+}
+
+/// Overlaid input-vs-output VU. Output is the filled bar (RMS, colored by its peak
+/// level); input is drawn as a cyan cap line + peak tick over the top. Reading it:
+/// the cyan line is where the signal entered, the filled bar is where the chain put
+/// it — line past the fill = net cut, fill past the line = net boost. Both share one
+/// dB scale (~ -54 dB .. 0).
+fn inout_meter(ui: &mut egui::Ui, in_rms: f32, in_peak: f32, out_rms: f32, out_peak: f32) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 16.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 3.0, theme::BG);
+    let db = |v: f32| 20.0 * v.max(1e-5).log10();
+    let norm = |d: f32| ((d + 54.0) / 54.0).clamp(0.0, 1.0);
+    let x_at = |v: f32| rect.left() + rect.width() * norm(db(v));
+
+    // OUT: filled RMS bar, colored by output peak (green/yellow/red).
+    let opk = norm(db(out_peak));
+    let col = if opk > norm(-3.0) {
+        egui::Color32::from_rgb(255, 90, 90)
+    } else if opk > norm(-12.0) {
+        egui::Color32::from_rgb(255, 210, 90)
+    } else {
+        theme::OK
+    };
+    let orms = norm(db(out_rms));
+    if orms > 0.0 {
+        let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * orms, rect.height()));
+        p.rect_filled(fill, 3.0, col.gamma_multiply(0.85));
+    }
+    // OUT peak tick (white).
+    let oxp = x_at(out_peak);
+    p.line_segment(
+        [egui::pos2(oxp, rect.top()), egui::pos2(oxp, rect.bottom())],
+        egui::Stroke::new(2.0, egui::Color32::WHITE),
+    );
+
+    // IN: a cyan cap line along the top to the input RMS extent + a half-height
+    // input peak tick. Sits over the OUT fill so both are always visible.
+    let inc = theme::cyan();
+    let irms_x = x_at(in_rms);
+    p.line_segment(
+        [egui::pos2(rect.left(), rect.top() + 2.0), egui::pos2(irms_x, rect.top() + 2.0)],
+        egui::Stroke::new(2.0, inc),
+    );
+    let ixp = x_at(in_peak);
+    p.line_segment(
+        [egui::pos2(ixp, rect.top()), egui::pos2(ixp, rect.top() + rect.height() * 0.5)],
+        egui::Stroke::new(1.5, inc.gamma_multiply(0.9)),
+    );
+
+    resp.on_hover_text(format!(
+        "IN   rms {:.0} dB   peak {:.0} dB\nOUT  rms {:.0} dB   peak {:.0} dB",
+        db(in_rms),
+        db(in_peak),
+        db(out_rms),
+        db(out_peak),
+    ));
 }
 
 /// Compact horizontal output meter: RMS fill (green/yellow/red by level) + peak tick.
