@@ -1,10 +1,21 @@
-//! tront.xyz "electric cyan" theme — near-black surfaces, a faint cyan grid, and
-//! neon-cyan accents with glow. Palette lifted from `assets/css/tront-themes.css`.
+//! Dynamic theme system. v0.2 had one hardcoded electric-cyan dark palette and
+//! a light variant; as of v0.5 the whole app (chrome AND canvas) reads from a
+//! runtime [`Palette`] — built-ins, 32 premade palettes, and a colormagic
+//! randomizer that derives themes which are always readable (WCAG contrast
+//! rules from `color.rs`, the TrontColors math vendored via Boxel).
+//!
+//! Every color in the app flows through the accessor fns below, so swapping
+//! the palette restyles everything live. The original electric-cyan values are
+//! preserved verbatim as the default built-in.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, RwLock};
 
 use eframe::egui::{self, Color32, Stroke};
 
+use crate::color::{self, Rgb};
+
+// Original tront.xyz electric-cyan values (kept as consts: they seed the two
+// classic built-ins and stay available for reference).
 pub const BG: Color32 = Color32::from_rgb(8, 13, 20); // deepest (canvas)
 pub const PANEL: Color32 = Color32::from_rgb(11, 18, 27); // toolbars/panels
 pub const PANEL2: Color32 = Color32::from_rgb(16, 27, 39); // widgets
@@ -14,139 +25,379 @@ pub const TEXT: Color32 = Color32::from_rgb(216, 240, 248);
 pub const MUTED: Color32 = Color32::from_rgb(110, 150, 168);
 pub const OK: Color32 = Color32::from_rgb(90, 230, 200);
 
-// Light-mode chrome palette. The EQ canvas (curve / spectrum / waterfall) and the
-// output meter stay dark in BOTH modes (a "scope" display), so only the chrome
-// (toolbar, side panel, About, buttons, text) swaps here.
 pub const LIGHT_BG: Color32 = Color32::from_rgb(236, 240, 245);
 pub const LIGHT_PANEL: Color32 = Color32::from_rgb(224, 230, 237);
 pub const LIGHT_PANEL2: Color32 = Color32::from_rgb(205, 214, 224);
 pub const LIGHT_TEXT: Color32 = Color32::from_rgb(22, 32, 42);
 pub const LIGHT_MUTED: Color32 = Color32::from_rgb(92, 110, 126);
-pub const LIGHT_CYAN: Color32 = Color32::from_rgb(0, 128, 160); // deeper accent for contrast on white
+pub const LIGHT_CYAN: Color32 = Color32::from_rgb(0, 128, 160);
 pub const LIGHT_OK: Color32 = Color32::from_rgb(20, 150, 118);
+pub const LIGHT_CANVAS_BG: Color32 = Color32::from_rgb(233, 238, 243);
 
-static DARK: AtomicBool = AtomicBool::new(true);
+/// A fully-resolved theme: chrome + canvas + viz colors. Built-ins are
+/// hand-tuned; everything else derives from a color list via colormagic's
+/// `generate_auto_theme` + contrast enforcement.
+#[derive(Clone)]
+pub struct Palette {
+    pub name: String,
+    /// Source hex list for persistence (empty = built-in, rebuilt by name).
+    pub source: Vec<String>,
+    pub dark: bool,
+
+    // Chrome
+    pub bg: Color32,
+    pub panel: Color32,
+    pub panel2: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub accent: Color32,
+    pub accent_dim: Color32,
+    pub ok: Color32,
+
+    // Canvas + viz
+    pub canvas_bg: Color32,
+    pub ink: Color32, // node rings / peak caps / meter ticks
+    pub viz_accent: Color32,
+    pub viz_cap: Color32,
+    pub glow: Color32, // glow-line core family
+    pub rainbow_s: f32,
+    pub rainbow_v: f32,
+}
+
+fn c32(rgb: Rgb) -> Color32 {
+    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+}
+fn rgb_of(c: Color32) -> Rgb {
+    [c.r(), c.g(), c.b()]
+}
+
+impl Palette {
+    /// The classic: tront.xyz electric cyan on near-black. Exact v0.2 values.
+    pub fn electric_cyan() -> Palette {
+        Palette {
+            name: "Electric Cyan".into(),
+            source: Vec::new(),
+            dark: true,
+            bg: BG,
+            panel: PANEL,
+            panel2: PANEL2,
+            text: TEXT,
+            muted: MUTED,
+            accent: CYAN,
+            accent_dim: CYAN_DIM,
+            ok: OK,
+            canvas_bg: BG,
+            ink: Color32::WHITE,
+            viz_accent: CYAN,
+            viz_cap: Color32::from_rgb(150, 245, 255),
+            glow: Color32::from_rgb(150, 240, 255),
+            rainbow_s: 0.85,
+            rainbow_v: 1.0,
+        }
+    }
+
+    /// The classic light mode ("Paper"). Exact v0.3 values.
+    pub fn paper() -> Palette {
+        Palette {
+            name: "Paper".into(),
+            source: Vec::new(),
+            dark: false,
+            bg: LIGHT_BG,
+            panel: LIGHT_PANEL,
+            panel2: LIGHT_PANEL2,
+            text: LIGHT_TEXT,
+            muted: LIGHT_MUTED,
+            accent: LIGHT_CYAN,
+            accent_dim: LIGHT_CYAN,
+            ok: LIGHT_OK,
+            canvas_bg: LIGHT_CANVAS_BG,
+            ink: Color32::from_rgb(22, 32, 42),
+            viz_accent: Color32::from_rgb(0, 122, 156),
+            viz_cap: Color32::from_rgb(0, 88, 116),
+            glow: Color32::from_rgb(0, 96, 128),
+            rainbow_s: 0.95,
+            rainbow_v: 0.72,
+        }
+    }
+
+    /// Hand-tuned synthwave: hot magenta on deep purple-black.
+    pub fn synthwave() -> Palette {
+        Palette {
+            name: "Synthwave".into(),
+            source: Vec::new(),
+            dark: true,
+            bg: Color32::from_rgb(16, 6, 26),
+            panel: Color32::from_rgb(22, 10, 36),
+            panel2: Color32::from_rgb(34, 16, 52),
+            text: Color32::from_rgb(244, 226, 255),
+            muted: Color32::from_rgb(150, 118, 178),
+            accent: Color32::from_rgb(255, 62, 200),
+            accent_dim: Color32::from_rgb(170, 40, 134),
+            ok: Color32::from_rgb(62, 242, 200),
+            canvas_bg: Color32::from_rgb(10, 3, 18),
+            ink: Color32::from_rgb(255, 240, 255),
+            viz_accent: Color32::from_rgb(255, 62, 200),
+            viz_cap: Color32::from_rgb(255, 170, 235),
+            glow: Color32::from_rgb(255, 150, 230),
+            rainbow_s: 0.85,
+            rainbow_v: 1.0,
+        }
+    }
+
+    /// Derive a full theme from a color list via colormagic: AutoTheme picks
+    /// bg/surface/primary, then contrast rules guarantee readable text and a
+    /// viz accent that pops on the canvas — randomize all day, stays pretty.
+    pub fn from_colors(name: &str, colors: &[Rgb]) -> Option<Palette> {
+        let t = color::generate_auto_theme(colors)?;
+        let dark = t.is_dark;
+        let bg = t.bg;
+        let surface = t.surface;
+
+        // Canvas sits a step deeper than the chrome on dark themes (scope
+        // look), a step brighter on light ones (paper look).
+        let canvas = if dark {
+            color::mix_colors(bg, [0, 0, 0], 0.45)
+        } else {
+            color::mix_colors(bg, [255, 255, 255], 0.55)
+        };
+        let ink = color::contrast_color(canvas);
+
+        // Primary accent must read against BOTH the panel and the canvas;
+        // walk lightness until it does (bounded).
+        let mut prim = t.primary;
+        let mut guard = 0;
+        while (color::contrast_ratio(prim, canvas) < 2.6
+            || color::contrast_ratio(prim, surface) < 2.2)
+            && guard < 14
+        {
+            let h = color::rgb_to_hsl(prim);
+            let l = if dark { (h.l + 6.0).min(92.0) } else { (h.l - 6.0).max(8.0) };
+            prim = color::hsl_to_rgb(h.h, h.s.max(45.0), l);
+            guard += 1;
+        }
+
+        // Text: WCAG 4.5 on the panel or it gets replaced outright.
+        let mut text = t.text;
+        if color::contrast_ratio(text, surface) < 4.5 {
+            text = color::contrast_color(surface);
+        }
+        let muted = color::mix_colors(text, surface, 0.45);
+        let panel2 =
+            color::mix_colors(surface, if dark { [255, 255, 255] } else { [0, 0, 0] }, 0.07);
+
+        Some(Palette {
+            name: name.into(),
+            source: colors.iter().map(|&c| color::rgb_to_hex(c)).collect(),
+            dark,
+            bg: c32(bg),
+            panel: c32(surface),
+            panel2: c32(panel2),
+            text: c32(text),
+            muted: c32(muted),
+            accent: c32(prim),
+            accent_dim: c32(color::mix_colors(prim, bg, 0.45)),
+            ok: c32(t.success),
+            canvas_bg: c32(canvas),
+            ink: c32(ink),
+            viz_accent: c32(prim),
+            viz_cap: c32(color::mix_colors(prim, ink, 0.5)),
+            glow: c32(color::mix_colors(prim, ink, 0.35)),
+            rainbow_s: if dark { 0.85 } else { 0.95 },
+            rainbow_v: if dark { 1.0 } else { 0.72 },
+        })
+    }
+
+    /// Look up a premade palette by name and derive a theme from it.
+    pub fn premade(name: &str) -> Option<Palette> {
+        let p = color::PREMADE_PALETTES.iter().find(|p| p.name == name)?;
+        let rgb: Vec<Rgb> = p.colors.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+        Palette::from_colors(name, &rgb)
+    }
+
+    /// Roll a new theme: random flavor palette, random harmony spread, or a
+    /// random premade — all funneled through the same contrast-safe deriver.
+    pub fn randomize() -> Palette {
+        let mut rng = color::Rng::from_clock();
+        let pick = rng.range(0, 2);
+        let derived = match pick {
+            0 => {
+                let kind = color::PaletteKind::ALL[rng.range(0, 5) as usize];
+                let cols = color::generate_random_palette(kind, 5, &mut rng);
+                let rgb: Vec<Rgb> =
+                    cols.iter().map(|h| color::hsl_to_rgb(h.h, h.s, h.l)).collect();
+                Palette::from_colors(&format!("Random {}", kind.label()), &rgb)
+            }
+            1 => {
+                let base = color::Hsl::new(
+                    rng.range(0, 359) as f32,
+                    rng.range(55, 95) as f32,
+                    rng.range(28, 62) as f32,
+                );
+                let rule = color::HARMONY_RULES[rng.range(0, 6) as usize];
+                let cols = color::generate_harmony(base, rule);
+                let rgb: Vec<Rgb> =
+                    cols.iter().map(|h| color::hsl_to_rgb(h.h, h.s, h.l)).collect();
+                Palette::from_colors(&format!("Random {rule}"), &rgb)
+            }
+            _ => {
+                let n = color::PREMADE_PALETTES.len() as i32;
+                let p = &color::PREMADE_PALETTES[rng.range(0, n - 1) as usize];
+                let rgb: Vec<Rgb> =
+                    p.colors.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+                Palette::from_colors(p.name, &rgb)
+            }
+        };
+        derived.unwrap_or_else(Palette::electric_cyan)
+    }
+
+    /// Resolve a persisted theme: built-in by name, else rebuild from the
+    /// stored source colors, else fall back to the classic.
+    pub fn resolve(name: &str, source: &[String]) -> Palette {
+        match name {
+            "Electric Cyan" => return Palette::electric_cyan(),
+            "Paper" => return Palette::paper(),
+            "Synthwave" => return Palette::synthwave(),
+            _ => {}
+        }
+        if !source.is_empty() {
+            let rgb: Vec<Rgb> = source.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+            if let Some(p) = Palette::from_colors(name, &rgb) {
+                return p;
+            }
+        }
+        // Unknown name with no source: try the premade list, else classic.
+        Palette::premade(name).unwrap_or_else(Palette::electric_cyan)
+    }
+}
+
+static CURRENT: LazyLock<RwLock<Palette>> =
+    LazyLock::new(|| RwLock::new(Palette::electric_cyan()));
+
+/// Swap the live palette and re-apply egui visuals.
+pub fn set_palette(ctx: &egui::Context, p: Palette) {
+    *CURRENT.write().unwrap() = p;
+    ctx.set_visuals(build_visuals());
+}
+
+/// Current palette snapshot (name + persistence fields; cheap enough outside
+/// per-frame hot paths).
+pub fn current() -> Palette {
+    CURRENT.read().unwrap().clone()
+}
 
 pub fn dark_mode() -> bool {
-    DARK.load(Ordering::Relaxed)
+    CURRENT.read().unwrap().dark
 }
 
-// Runtime chrome accessors (dark default / light variant). Use these for any
-// chrome color; canvas code keeps using the fixed dark consts above.
-pub fn bg() -> Color32 {
-    if dark_mode() { BG } else { LIGHT_BG }
+/// Legacy toggle: swaps between the two classic built-ins. (Arbitrary themes
+/// are picked in SETUP; this stays as the quick toolbar flip.)
+pub fn set_mode(ctx: &egui::Context, dark: bool) {
+    set_palette(ctx, if dark { Palette::electric_cyan() } else { Palette::paper() });
 }
+
+// ---- Chrome accessors --------------------------------------------------------
+// bg/panel are unused right now (build_visuals reads the palette directly) but
+// they complete the accessor API; keep them callable.
+
+#[allow(dead_code)]
+pub fn bg() -> Color32 {
+    CURRENT.read().unwrap().bg
+}
+#[allow(dead_code)]
 pub fn panel() -> Color32 {
-    if dark_mode() { PANEL } else { LIGHT_PANEL }
+    CURRENT.read().unwrap().panel
 }
 pub fn panel2() -> Color32 {
-    if dark_mode() { PANEL2 } else { LIGHT_PANEL2 }
+    CURRENT.read().unwrap().panel2
 }
 pub fn text() -> Color32 {
-    if dark_mode() { TEXT } else { LIGHT_TEXT }
+    CURRENT.read().unwrap().text
 }
 pub fn muted() -> Color32 {
-    if dark_mode() { MUTED } else { LIGHT_MUTED }
+    CURRENT.read().unwrap().muted
 }
 pub fn cyan() -> Color32 {
-    if dark_mode() { CYAN } else { LIGHT_CYAN }
+    CURRENT.read().unwrap().accent
 }
 pub fn ok() -> Color32 {
-    if dark_mode() { OK } else { LIGHT_OK }
+    CURRENT.read().unwrap().ok
 }
 
-// ---- Canvas (the viz scope) -------------------------------------------------
-// The canvas historically stayed dark in both modes; as of v0.3 it follows the
-// theme. Light values are tuned as ink-on-paper: dark grid/labels, deep
-// saturated viz colors (full-value neon washes out on pale).
-
-pub const LIGHT_CANVAS_BG: Color32 = Color32::from_rgb(233, 238, 243);
-const INK: Color32 = Color32::from_rgb(22, 32, 42);
-
-/// Canvas background (deep navy dark / pale blue-gray light).
-pub fn canvas_bg() -> Color32 {
-    if dark_mode() { BG } else { LIGHT_CANVAS_BG }
-}
-/// Canvas grid lines.
-pub fn canvas_grid() -> Color32 {
-    if dark_mode() {
-        Color32::from_rgba_unmultiplied(0, 224, 255, 15)
-    } else {
-        Color32::from_rgba_unmultiplied(22, 42, 62, 26)
-    }
-}
-/// The emphasized 0 dB line.
-pub fn canvas_zero() -> Color32 {
-    if dark_mode() {
-        Color32::from_rgba_unmultiplied(0, 224, 255, 55)
-    } else {
-        Color32::from_rgba_unmultiplied(22, 42, 62, 85)
-    }
-}
-/// Axis labels on the canvas.
-pub fn canvas_label() -> Color32 {
-    if dark_mode() { MUTED } else { LIGHT_MUTED }
-}
-/// "White" accents (node rings, peak caps, meter peak ticks): white on dark,
-/// near-black ink on light.
-pub fn ink(a: u8) -> Color32 {
-    let c = if dark_mode() { Color32::WHITE } else { INK };
+fn border(a: u8) -> Color32 {
+    let c = CURRENT.read().unwrap().accent;
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
-/// The pale-cyan glow-line core family (150,240,255 on dark; deep teal ink on light).
-pub fn glow_core(a: u8) -> Color32 {
-    if dark_mode() {
-        Color32::from_rgba_unmultiplied(150, 240, 255, a)
-    } else {
-        Color32::from_rgba_unmultiplied(0, 96, 128, a)
-    }
+
+// ---- Canvas accessors ----------------------------------------------------------
+
+pub fn canvas_bg() -> Color32 {
+    CURRENT.read().unwrap().canvas_bg
 }
-/// Node hover tooltip.
+pub fn canvas_grid() -> Color32 {
+    let p = CURRENT.read().unwrap();
+    let c = if p.dark { p.accent } else { p.ink };
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), if p.dark { 15 } else { 26 })
+}
+pub fn canvas_zero() -> Color32 {
+    let p = CURRENT.read().unwrap();
+    let c = if p.dark { p.accent } else { p.ink };
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), if p.dark { 55 } else { 85 })
+}
+pub fn canvas_label() -> Color32 {
+    CURRENT.read().unwrap().muted
+}
+/// "White" accents (node rings, peak caps, meter ticks): ink on the canvas.
+pub fn ink(a: u8) -> Color32 {
+    let c = CURRENT.read().unwrap().ink;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+pub fn glow_core(a: u8) -> Color32 {
+    let c = CURRENT.read().unwrap().glow;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
 pub fn tooltip_bg() -> Color32 {
-    if dark_mode() {
-        Color32::from_rgba_unmultiplied(6, 16, 24, 230)
+    let p = CURRENT.read().unwrap();
+    if p.dark {
+        let b = rgb_of(p.bg);
+        let m = color::mix_colors(b, [0, 0, 0], 0.35);
+        Color32::from_rgba_unmultiplied(m[0], m[1], m[2], 230)
     } else {
         Color32::from_rgba_unmultiplied(250, 252, 255, 240)
     }
 }
 pub fn tooltip_text() -> Color32 {
-    if dark_mode() { TEXT } else { LIGHT_TEXT }
+    CURRENT.read().unwrap().text
 }
-/// Corner-inset backdrop (the goniometer box).
 pub fn inset_bg() -> Color32 {
-    if dark_mode() {
-        Color32::from_rgba_unmultiplied(4, 10, 16, 150)
+    let p = CURRENT.read().unwrap();
+    if p.dark {
+        let b = rgb_of(p.canvas_bg);
+        let m = color::mix_colors(b, [0, 0, 0], 0.4);
+        Color32::from_rgba_unmultiplied(m[0], m[1], m[2], 150)
     } else {
         Color32::from_rgba_unmultiplied(255, 255, 255, 170)
     }
 }
-/// Primary viz accent (bars / fills / lines).
 pub fn viz_accent() -> Color32 {
-    if dark_mode() { Color32::from_rgb(0, 224, 255) } else { Color32::from_rgb(0, 122, 156) }
+    CURRENT.read().unwrap().viz_accent
 }
-/// Bright bar-cap accent.
 pub fn viz_cap() -> Color32 {
-    if dark_mode() { Color32::from_rgb(150, 245, 255) } else { Color32::from_rgb(0, 88, 116) }
+    CURRENT.read().unwrap().viz_cap
 }
-/// Meter track behind the VU fill.
 pub fn meter_track() -> Color32 {
-    if dark_mode() { BG } else { LIGHT_PANEL2 }
+    let p = CURRENT.read().unwrap();
+    if p.dark { p.canvas_bg } else { p.panel2 }
 }
-/// Rainbow sweep tuned per mode: full-value neon on dark, darker + denser on
-/// light so it reads as ink instead of washing out.
+/// Rainbow sweep tuned per palette (neon on dark, ink-dense on light).
 pub fn viz_hsv(h: f32) -> Color32 {
-    if dark_mode() { hsv(h, 0.85, 1.0) } else { hsv(h, 0.95, 0.72) }
+    let p = CURRENT.read().unwrap();
+    hsv(h, p.rainbow_s, p.rainbow_v)
 }
-/// Rainbow for bright caps (desaturated-bright on dark, deep on light).
 pub fn viz_hsv_cap(h: f32) -> Color32 {
     if dark_mode() { hsv(h, 0.5, 1.0) } else { hsv(h, 0.9, 0.55) }
 }
 
-fn border(a: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(0, 224, 255, a)
-}
-
-/// HSV -> Color32. h, s, v in 0..=1. Used for the rainbow-skittles theme.
+/// HSV -> Color32. h, s, v in 0..=1. The rainbow workhorse.
 pub fn hsv(h: f32, s: f32, v: f32) -> Color32 {
     let h = (h.fract() + 1.0).fract() * 6.0;
     let i = h.floor() as i32;
@@ -197,7 +448,7 @@ pub fn apply(ctx: &egui::Context) {
     );
     ctx.set_fonts(fonts);
 
-    set_mode(ctx, dark_mode());
+    ctx.set_visuals(build_visuals());
 
     let mut style = (*ctx.style()).clone();
     // Rajdhani is condensed, so nudge sizes up for legibility.
@@ -221,42 +472,30 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// Switch dark/light at runtime and re-apply chrome visuals (fonts + spacing are
-/// mode-independent and stay as set by `apply`).
-pub fn set_mode(ctx: &egui::Context, dark: bool) {
-    DARK.store(dark, Ordering::Relaxed);
-    ctx.set_visuals(build_visuals());
-}
-
-/// egui Visuals for the current mode. Chrome only; the EQ canvas paints itself
-/// with the fixed dark consts regardless of mode.
+/// egui Visuals derived entirely from the current palette.
 fn build_visuals() -> egui::Visuals {
-    let dark = dark_mode();
-    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
-    let fg_strong = if dark { Color32::WHITE } else { LIGHT_TEXT };
-    let hover = if dark {
-        Color32::from_rgb(18, 42, 56)
-    } else {
-        Color32::from_rgb(214, 226, 236)
-    };
-    let accent_dim = if dark { CYAN_DIM } else { LIGHT_CYAN };
+    let p = CURRENT.read().unwrap().clone();
+    let mut v = if p.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let fg_strong = if p.dark { Color32::WHITE } else { p.text };
+    let hover = c32(color::mix_colors(rgb_of(p.panel2), rgb_of(p.accent), 0.14));
+    let accent_dim = p.accent_dim;
 
-    v.panel_fill = panel();
-    v.window_fill = panel();
+    v.panel_fill = p.panel;
+    v.window_fill = p.panel;
     v.window_stroke = Stroke::new(1.0, border(40));
-    v.extreme_bg_color = bg();
-    v.faint_bg_color = panel2();
-    v.override_text_color = Some(text());
-    v.hyperlink_color = cyan();
-    v.selection.bg_fill = cyan().gamma_multiply(0.30);
-    v.selection.stroke = Stroke::new(1.0, cyan());
+    v.extreme_bg_color = p.bg;
+    v.faint_bg_color = p.panel2;
+    v.override_text_color = Some(p.text);
+    v.hyperlink_color = p.accent;
+    v.selection.bg_fill = p.accent.gamma_multiply(0.30);
+    v.selection.stroke = Stroke::new(1.0, p.accent);
 
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, muted());
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.muted);
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, border(28));
 
-    v.widgets.inactive.bg_fill = panel2();
-    v.widgets.inactive.weak_bg_fill = panel2();
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, text());
+    v.widgets.inactive.bg_fill = p.panel2;
+    v.widgets.inactive.weak_bg_fill = p.panel2;
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.text);
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, border(60));
 
     v.widgets.hovered.bg_fill = hover;
@@ -264,10 +503,10 @@ fn build_visuals() -> egui::Visuals {
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, fg_strong);
     v.widgets.hovered.bg_stroke = Stroke::new(1.5, accent_dim);
 
-    v.widgets.active.bg_fill = cyan().gamma_multiply(0.22);
-    v.widgets.active.weak_bg_fill = cyan().gamma_multiply(0.22);
+    v.widgets.active.bg_fill = p.accent.gamma_multiply(0.22);
+    v.widgets.active.weak_bg_fill = p.accent.gamma_multiply(0.22);
     v.widgets.active.fg_stroke = Stroke::new(1.0, fg_strong);
-    v.widgets.active.bg_stroke = Stroke::new(1.5, cyan());
+    v.widgets.active.bg_stroke = Stroke::new(1.5, p.accent);
 
     v.clip_rect_margin = 0.0;
     v

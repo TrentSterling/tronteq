@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod about;
+mod color;
 mod curve;
 mod devices;
 mod dsp_preview;
@@ -236,7 +237,15 @@ impl App {
         // the first frame; the live chain still comes from state.bin (the APO is
         // already running with it) - the active profile is just the UI marker.
         let ui_settings = settings::AppSettings::load();
-        theme::set_mode(ctx, ui_settings.dark_mode);
+        if ui_settings.theme_name.is_empty() {
+            // Pre-theme settings file: honor the old dark/light flag.
+            theme::set_mode(ctx, ui_settings.dark_mode);
+        } else {
+            theme::set_palette(
+                ctx,
+                theme::Palette::resolve(&ui_settings.theme_name, &ui_settings.theme_colors),
+            );
+        }
         ctx.set_zoom_factor(ui_settings.zoom);
         let store = profiles::ProfileStore::load();
         let active_profile = ui_settings
@@ -794,15 +803,18 @@ impl eframe::App for App {
 
         // Persist UI settings on change. There is no clean shutdown hook (tray
         // Quit is process::exit), so save-on-change is the only reliable path.
+        let pal = theme::current();
         let cur = settings::AppSettings {
             schema: 1,
-            dark_mode: theme::dark_mode(),
+            dark_mode: pal.dark,
             rainbow: self.rainbow,
             layers: self.layers,
             zoom: ctx.zoom_factor(),
             active_profile: self.active_profile.clone(),
             inspector_tab: self.tab.as_str().to_string(),
             show_mode: self.show.mode.as_str().to_string(),
+            theme_name: pal.name,
+            theme_colors: pal.source,
         };
         if cur != self.settings_cache {
             cur.save();

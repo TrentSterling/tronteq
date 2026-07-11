@@ -48,6 +48,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut do_apply = false;
     let mut do_refresh = false;
     let mut do_reset_all = false;
+    let mut theme_pick: Option<theme::Palette> = None;
 
     egui::SidePanel::right("chain")
         .resizable(false)
@@ -72,6 +73,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         &mut do_apply,
                         &mut do_refresh,
                         &mut do_reset_all,
+                        &mut theme_pick,
                     ),
                 }
                 ui.add_space(8.0);
@@ -83,6 +85,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     app.rainbow = rainbow;
     app.show.mode = show_mode;
     app.selected_device = sel_device;
+    if let Some(p) = theme_pick {
+        theme::set_palette(ctx, p);
+    }
     if do_refresh {
         app.devices = devices::list().unwrap_or_default();
         app.selected_device = app.selected_device.min(app.devices.len().saturating_sub(1));
@@ -239,6 +244,7 @@ fn viz_tab(
 
 /// Output device install flow + UI prefs + maintenance + status readouts.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn setup_tab(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -247,6 +253,7 @@ fn setup_tab(
     do_apply: &mut bool,
     do_refresh: &mut bool,
     do_reset_all: &mut bool,
+    theme_pick: &mut Option<theme::Palette>,
 ) {
     let busy = app.apply_rx.is_some();
 
@@ -296,6 +303,39 @@ fn setup_tab(
         };
         ui.colored_label(color, msg);
     }
+    ui.separator();
+
+    ui.label(egui::RichText::new("THEME").color(theme::cyan()).strong());
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Electric Cyan").clicked() {
+            *theme_pick = Some(theme::Palette::electric_cyan());
+        }
+        if ui.button("Paper").clicked() {
+            *theme_pick = Some(theme::Palette::paper());
+        }
+        if ui.button("Synthwave").clicked() {
+            *theme_pick = Some(theme::Palette::synthwave());
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        for name in ["Dracula", "Tokyo Night", "Gruvbox", "Hades Fire", "Deep Ocean", "Arctic Aurora"] {
+            if ui.button(name).clicked() {
+                *theme_pick = theme::Palette::premade(name);
+            }
+        }
+    });
+    if ui
+        .button("Roll a random theme")
+        .on_hover_text("colormagic: random palette or harmony, contrast-safe by construction")
+        .clicked()
+    {
+        *theme_pick = Some(theme::Palette::randomize());
+    }
+    ui.label(
+        egui::RichText::new(format!("current: {}", theme::current().name))
+            .color(theme::muted())
+            .small(),
+    );
     ui.separator();
 
     ui.label(egui::RichText::new("UI").color(theme::cyan()).strong());

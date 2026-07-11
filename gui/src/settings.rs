@@ -22,6 +22,10 @@ pub struct AppSettings {
     pub active_profile: Option<String>,
     pub inspector_tab: String,
     pub show_mode: String,
+    /// Theme name; built-ins resolve by name, derived themes rebuild from
+    /// `theme_colors`. Empty = pre-theme settings file -> honor `dark_mode`.
+    pub theme_name: String,
+    pub theme_colors: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -35,6 +39,8 @@ impl Default for AppSettings {
             active_profile: None,
             inspector_tab: "chain".into(),
             show_mode: "off".into(),
+            theme_name: String::new(),
+            theme_colors: Vec::new(),
         }
     }
 }
