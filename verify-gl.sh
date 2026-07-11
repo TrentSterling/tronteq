@@ -14,7 +14,8 @@ cp "$SET" "$SET.verifybak"
 powershell -Command "(New-Object System.Media.SoundPlayer 'C:\\Windows\\Media\\Ring05.wav').PlayLooping(); Start-Sleep -Seconds 170" &
 LOOPER=$!
 
-MODES="gl_warp gl_flame gl_smoke gl_plasma gl_starfield gl_kaleido gl_tunnel3d gl_metaballs gl_voronoi gl_nebula gl_terrain gl_ripples gl_julia"
+# Modes: pass as args to verify a subset, default = all.
+MODES="${*:-gl_warp gl_flame gl_smoke gl_plasma gl_starfield gl_kaleido gl_tunnel3d gl_metaballs gl_voronoi gl_nebula gl_terrain gl_ripples gl_julia}"
 for m in $MODES; do
   schtasks //end //tn TrontEQ >/dev/null 2>&1
   sleep 1
