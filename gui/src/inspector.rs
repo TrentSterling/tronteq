@@ -238,9 +238,17 @@ fn viz_tab(
     ui.checkbox(rainbow, "Rainbow mode");
     ui.separator();
     ui.label(egui::RichText::new("SHOW").color(theme::cyan()).strong());
-    for m in show::ShowMode::ALL {
-        ui.selectable_value(show_mode, m, m.label());
-    }
+    ui.horizontal_wrapped(|ui| {
+        for m in show::ShowMode::ALL.iter().copied().filter(|m| m.gl_mode().is_none()) {
+            ui.selectable_value(show_mode, m, m.label());
+        }
+    });
+    ui.label(egui::RichText::new("SHOW GL (shaders)").color(theme::cyan()).strong());
+    ui.horizontal_wrapped(|ui| {
+        for m in show::ShowMode::ALL.iter().copied().filter(|m| m.gl_mode().is_some()) {
+            ui.selectable_value(show_mode, m, m.label());
+        }
+    });
     ui.label(
         egui::RichText::new("One at a time. Beat-reactive, draws under the analyzers - turn ANALYZE layers off for pure eye candy.")
             .color(theme::muted())

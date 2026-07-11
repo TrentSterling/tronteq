@@ -33,10 +33,20 @@ pub enum ShowMode {
     GlWarp,
     GlFlame,
     GlSmoke,
+    GlPlasma,
+    GlStarfield,
+    GlKaleido,
+    GlTunnel3d,
+    GlMetaballs,
+    GlVoronoi,
+    GlNebula,
+    GlTerrain,
+    GlRipples,
+    GlJulia,
 }
 
 impl ShowMode {
-    pub const ALL: [ShowMode; 8] = [
+    pub const ALL: [ShowMode; 18] = [
         ShowMode::Off,
         ShowMode::BarsXl,
         ShowMode::ScopeTrails,
@@ -45,6 +55,16 @@ impl ShowMode {
         ShowMode::GlWarp,
         ShowMode::GlFlame,
         ShowMode::GlSmoke,
+        ShowMode::GlPlasma,
+        ShowMode::GlStarfield,
+        ShowMode::GlKaleido,
+        ShowMode::GlTunnel3d,
+        ShowMode::GlMetaballs,
+        ShowMode::GlVoronoi,
+        ShowMode::GlNebula,
+        ShowMode::GlTerrain,
+        ShowMode::GlRipples,
+        ShowMode::GlJulia,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -53,9 +73,19 @@ impl ShowMode {
             ShowMode::ScopeTrails => "Scope trails",
             ShowMode::Tunnel => "Tunnel",
             ShowMode::Particles => "Particles",
-            ShowMode::GlWarp => "Warp (GL)",
-            ShowMode::GlFlame => "Flame (GL)",
-            ShowMode::GlSmoke => "Smoke (GL)",
+            ShowMode::GlWarp => "Warp",
+            ShowMode::GlFlame => "Flame",
+            ShowMode::GlSmoke => "Smoke",
+            ShowMode::GlPlasma => "Plasma",
+            ShowMode::GlStarfield => "Starfield",
+            ShowMode::GlKaleido => "Kaleido",
+            ShowMode::GlTunnel3d => "Ray tunnel",
+            ShowMode::GlMetaballs => "Metaballs",
+            ShowMode::GlVoronoi => "Voronoi",
+            ShowMode::GlNebula => "Nebula",
+            ShowMode::GlTerrain => "Terrain",
+            ShowMode::GlRipples => "Ripples",
+            ShowMode::GlJulia => "Julia",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -68,6 +98,16 @@ impl ShowMode {
             ShowMode::GlWarp => "gl_warp",
             ShowMode::GlFlame => "gl_flame",
             ShowMode::GlSmoke => "gl_smoke",
+            ShowMode::GlPlasma => "gl_plasma",
+            ShowMode::GlStarfield => "gl_starfield",
+            ShowMode::GlKaleido => "gl_kaleido",
+            ShowMode::GlTunnel3d => "gl_tunnel3d",
+            ShowMode::GlMetaballs => "gl_metaballs",
+            ShowMode::GlVoronoi => "gl_voronoi",
+            ShowMode::GlNebula => "gl_nebula",
+            ShowMode::GlTerrain => "gl_terrain",
+            ShowMode::GlRipples => "gl_ripples",
+            ShowMode::GlJulia => "gl_julia",
         }
     }
     pub fn from_str(s: &str) -> ShowMode {
@@ -79,15 +119,36 @@ impl ShowMode {
             "gl_warp" => ShowMode::GlWarp,
             "gl_flame" => ShowMode::GlFlame,
             "gl_smoke" => ShowMode::GlSmoke,
+            "gl_plasma" => ShowMode::GlPlasma,
+            "gl_starfield" => ShowMode::GlStarfield,
+            "gl_kaleido" => ShowMode::GlKaleido,
+            "gl_tunnel3d" => ShowMode::GlTunnel3d,
+            "gl_metaballs" => ShowMode::GlMetaballs,
+            "gl_voronoi" => ShowMode::GlVoronoi,
+            "gl_nebula" => ShowMode::GlNebula,
+            "gl_terrain" => ShowMode::GlTerrain,
+            "gl_ripples" => ShowMode::GlRipples,
+            "gl_julia" => ShowMode::GlJulia,
             _ => ShowMode::Off,
         }
     }
     /// GL-stage modes are rendered by glstage, not the painter.
     pub fn gl_mode(self) -> Option<crate::glstage::GlMode> {
+        use crate::glstage::GlMode as G;
         match self {
-            ShowMode::GlWarp => Some(crate::glstage::GlMode::Warp),
-            ShowMode::GlFlame => Some(crate::glstage::GlMode::Flame),
-            ShowMode::GlSmoke => Some(crate::glstage::GlMode::Smoke),
+            ShowMode::GlWarp => Some(G::Warp),
+            ShowMode::GlFlame => Some(G::Flame),
+            ShowMode::GlSmoke => Some(G::Smoke),
+            ShowMode::GlPlasma => Some(G::Plasma),
+            ShowMode::GlStarfield => Some(G::Starfield),
+            ShowMode::GlKaleido => Some(G::Kaleido),
+            ShowMode::GlTunnel3d => Some(G::Tunnel3d),
+            ShowMode::GlMetaballs => Some(G::Metaballs),
+            ShowMode::GlVoronoi => Some(G::Voronoi),
+            ShowMode::GlNebula => Some(G::Nebula),
+            ShowMode::GlTerrain => Some(G::Terrain),
+            ShowMode::GlRipples => Some(G::Ripples),
+            ShowMode::GlJulia => Some(G::Julia),
             _ => None,
         }
     }
@@ -159,11 +220,13 @@ impl ShowState {
             self.step(viz, rect);
         }
         match self.mode {
-            ShowMode::Off | ShowMode::GlWarp | ShowMode::GlFlame | ShowMode::GlSmoke => {}
             ShowMode::BarsXl => self.draw_bars_xl(painter, rect, viz.spectrum, rainbow),
             ShowMode::ScopeTrails => self.draw_scope_trails(painter, rect, rainbow),
             ShowMode::Tunnel => self.draw_tunnel(painter, rect, viz.spectrum, rainbow),
             ShowMode::Particles => self.draw_particles(painter, rect),
+            // Off + every GL mode: nothing to paint here (the GL stage owns
+            // those, and draw() early-returns for them anyway).
+            _ => {}
         }
     }
 

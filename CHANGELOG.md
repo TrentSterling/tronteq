@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.7.0] - 2026-07-11/12 (night arc, wave 3 — ten more FX + the fixes)
+
+- **VIEWPORT FIX**: GL modes no longer paint over the panels/toolbar. The
+  present pass now restores egui_glow's own viewport + scissor and draws a
+  plain fullscreen triangle (v0.6.0 disabled scissor and reprojected the rect
+  by hand — wrong on both counts).
+- **Timestep decoupled**: shader clock is a sim clock advanced by CLAMPED dt
+  (max 50ms/frame) — frame stalls no longer fast-forward the FX. Repaint
+  pacing moved to a heartbeat thread (Boxel pattern: winit defers
+  request_repaint_after deadlines; thread-side requests are immediate):
+  60fps focused / 20 unfocused / 2 tray-hidden.
+- **Ten new GL modes**: Plasma, Starfield (feedback streaks), Kaleido
+  (feedback fold), Ray tunnel, Metaballs (band-driven blobs), Voronoi
+  (cells lit by FFT bins), Nebula (fbm clouds), **Terrain** (tron wireframe
+  mountains raymarched over a scrolling spectrum-HISTORY texture — the audio
+  is literally the landscape), Ripples (beat-phase rings refracting the
+  feedback), Julia (bass-orbited fractal). SHOW UI regrouped into painter +
+  GL chip rows.
+- **Live-capture verification** (`livecap.ps1` + `verify-gl.sh`): PrintWindow
+  captures of the running app per GL mode, reviewed by AI vision before the
+  user ever tests — closes the kittest/GL coverage gap.
+
 ## [0.6.0] - 2026-07-11 (night arc, wave 2 — the shader leap)
 
 - **GL viz stage** (`glstage.rs`): real GLSL under the canvas via egui

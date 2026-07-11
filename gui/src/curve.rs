@@ -88,17 +88,15 @@ pub fn draw(
             rect,
             callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(
                 move |info, painter| {
+                    // egui_glow's own viewport for this callback (GL bottom-
+                    // origin); the stage restores it for the present pass.
                     let vp = info.viewport_in_pixels();
-                    let rect_px = [
-                        vp.left_px as f32,
-                        vp.top_px as f32,
-                        (vp.left_px + vp.width_px) as f32,
-                        (vp.top_px + vp.height_px) as f32,
-                    ];
-                    let screen_px =
-                        [info.screen_size_px[0] as f32, info.screen_size_px[1] as f32];
                     if let Ok(mut st) = stage.lock() {
-                        st.paint(painter.gl(), &u, rect_px, screen_px);
+                        st.paint(
+                            painter.gl(),
+                            &u,
+                            [vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px],
+                        );
                     }
                 },
             )),

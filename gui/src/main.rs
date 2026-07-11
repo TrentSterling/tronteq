@@ -156,6 +156,7 @@ struct App {
     _tray: Option<TrayIcon>,
     app_hwnd: isize,
     visible: Arc<AtomicBool>, // false while hidden-to-tray -> slow idle repaint
+    focused: Arc<AtomicBool>, // published for the repaint heartbeat thread
 
     // Output picker
     devices: Vec<devices::Device>,
@@ -300,6 +301,29 @@ impl App {
         // Tracks shown vs hidden-to-tray so update() can drop to a slow idle
         // repaint instead of burning a core at 60fps with no window on screen.
         let visible = Arc::new(AtomicBool::new(true));
+        let focused = Arc::new(AtomicBool::new(true));
+
+        // Repaint heartbeat thread (Boxel pattern): winit DEFERS
+        // request_repaint_after deadlines so pacing from update() drifts and
+        // the viz visibly stutters/rushes; a repaint request from another
+        // thread is delivered immediately. 60fps focused, 20fps unfocused,
+        // 2fps hidden-to-tray.
+        {
+            let c = ctx.clone();
+            let v = visible.clone();
+            let f = focused.clone();
+            std::thread::spawn(move || loop {
+                let ms = if !v.load(Ordering::Relaxed) {
+                    500
+                } else if f.load(Ordering::Relaxed) {
+                    16
+                } else {
+                    50
+                };
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                c.request_repaint();
+            });
+        }
 
         // Tray events fire on the message thread even while the window is hidden;
         // act via raw Win32 (works without the eframe update loop running).
@@ -359,6 +383,7 @@ impl App {
             _tray: tray,
             app_hwnd,
             visible,
+            focused,
             devices,
             selected_device,
             apply_rx: None,
@@ -520,8 +545,7 @@ impl eframe::App for App {
         // core while tray'd. The tray Show/DoubleClick handlers flip `visible` back
         // on and call request_repaint(), so showing is still instant.
         if !self.visible.load(Ordering::Relaxed) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-            return;
+            return; // the heartbeat thread keeps a 2fps pulse while tray'd
         }
 
         // Read APO telemetry up front: the toolbar warning chip and the bottom
@@ -895,14 +919,11 @@ impl eframe::App for App {
         self.profiler.commit_frame();
         self.profiler.draw_overlay(ctx, self.frame_ms);
 
-        // Repaint ~60fps when focused; throttle to ~20fps when alt-tabbed away so we
-        // stop hammering the GPU for a window the user isn't watching. (Hidden-to-tray
-        // already returned early far above.) Resume stays smooth because the history
-        // visualizers are wall-clock paced above — they don't fast-forward when frames
-        // jump back to 60fps.
+        // The heartbeat thread owns repaint pacing (60/20/2 fps by state; see
+        // App::new) — winit defers request_repaint_after deadlines, so pacing
+        // from here was never steady. We just publish focus.
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
-        let interval = if focused { 16 } else { 50 };
-        ctx.request_repaint_after(std::time::Duration::from_millis(interval));
+        self.focused.store(focused, Ordering::Relaxed);
     }
 }
 
