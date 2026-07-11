@@ -55,4 +55,21 @@ Checked boards for the bluetooth man-in-the-middle / handheld sound driver dongl
 - "presets are good but saved profiles are better"
 - "I love the EQ software more than boxel tbh"
 
-*(fill in: screenshots before/after, final commit list, what actually made 5pm)*
+## The receipts
+
+Four commits, one afternoon:
+
+- `6f96998` — baseline checkpoint (turns out the entire glow-renderer fix + vumeter
+  telemetry work from June was never committed; refactor day started by rescuing it)
+- `c247b59` — profiles + settings persistence
+- `ec24668` — tabbed inspector + single-row toolbar + peak fix + tofu fix
+- `49b7f23` — true light canvas + v0.3.0
+
+Every phase compiled clean with zero warnings on the first check. The launch
+verify went through dev-cycle.ps1 (a self-elevating kill/build/relaunch/verify
+script — the exe is locked while running, so the build has to happen inside the
+elevated window). Biggest human-factors discovery of the day: UAC prompts expire
+after two minutes, and a dev deep in Discord will out-wait every single one.
+chord.wav became the official "click the dialog" bat-signal.
+
+*(fill in: before/after screenshots, launch verdict)*
