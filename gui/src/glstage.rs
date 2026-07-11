@@ -236,7 +236,9 @@ void main() {
 const FRAG_STARFIELD: &str = r#"
 void main() {
     vec2 p = aspect(vUv);
-    vec3 col = texture(uPrev, .5 + (vUv - .5) * .985).rgb * .82;
+    // Feedback streaks with a hard bias-down so converging trails can't pile
+    // into a blown-white core (v0.7.0 lesson).
+    vec3 col = max(texture(uPrev, .5 + (vUv - .5) * .985).rgb * .78 - .006, 0.);
     float speed = .15 + uBass * .9;
     for (int i = 0; i < 40; i++) {
         float fi = float(i);
@@ -244,11 +246,11 @@ void main() {
         float ph = fract(hash(vec2(fi, 3.)) + uTime * speed * (.3 + hash(vec2(fi, 5.))));
         vec2 sp = dir * ph * .8;
         float d = length(p - sp);
-        float b = (1. - ph) * .0016 / (d * d + .00002);
+        float b = (1. - ph) * .0009 / (d * d + .00002);
         vec3 sc = (uRainbow == 1) ? hsv2rgb(vec3(hash(vec2(fi, 9.)), .6, 1.)) : uAccent;
-        col += sc * min(b, .8) * (.5 + uTreb);
+        col += sc * min(b, .35) * (.35 + uTreb * .4);
     }
-    frag = vec4(min(col, vec3(1.4)), 0.);
+    frag = vec4(min(col, vec3(1.)), 0.);
 }"#;
 
 const FRAG_KALEIDO: &str = r#"
@@ -341,36 +343,39 @@ void main() {
 const FRAG_TERRAIN: &str = r#"
 float hgt(vec2 xz) {
     float h = hist(vec2(xz.x * .5 + .5, xz.y * (1. / 16.)));
-    return h * (.5 + uPulse * .2);
+    // Camera flies at y=.58: keep peaks safely below the eye so rays get
+    // DEPTH before hitting (v0.7.0 spawned the camera inside the terrain
+    // and every pixel hit at t~0 - a flat purple wash).
+    return h * (.30 + uPulse * .10);
 }
 void main() {
     vec2 p = aspect(vUv);
-    vec3 ro = vec3(0., .42, 0.);
-    vec3 rd = normalize(vec3(p.x, p.y - .16, .8));
+    vec3 ro = vec3(0., .58, 0.);
+    vec3 rd = normalize(vec3(p.x, p.y - .18, .8));
     float scroll = uTime * (1.2 + uBass * 2.);
     vec3 col = vec3(0.);
-    float glow = smoothstep(.28, .0, abs(rd.y + .02)) * (.22 + uTreb * .55);
+    float glow = smoothstep(.22, .0, abs(rd.y + .04)) * (.25 + uTreb * .5);
     vec3 horizon = (uRainbow == 1) ? hsv2rgb(vec3(uPhase, .7, 1.)) : uAccent;
     col += horizon * glow;
-    if (rd.y < -.005) {
-        float tt = .05;
+    if (rd.y < -.01) {
+        float tt = .15;
         bool hit = false;
         vec3 pos = ro;
-        for (int i = 0; i < 48; i++) {
+        for (int i = 0; i < 64; i++) {
             pos = ro + rd * tt;
             if (pos.y < hgt(vec2(pos.x, pos.z + scroll))) { hit = true; break; }
-            tt += .04 + tt * .07;
-            if (tt > 7.) break;
+            tt += .03 + tt * .05;
+            if (tt > 8.) break;
         }
         if (hit) {
             float zc = pos.z + scroll;
-            vec2 g = vec2(pos.x * 7., zc * 7.);
+            vec2 g = vec2(pos.x * 5., zc * 5.);
             vec2 gf = abs(fract(g) - .5);
-            float line = smoothstep(.42, .5, max(gf.x, gf.y));
+            float line = smoothstep(.40, .5, max(gf.x, gf.y));
             float h = hgt(vec2(pos.x, zc));
-            float fog = exp(-tt * .5);
-            vec3 wire = (uRainbow == 1) ? hsv2rgb(vec3(fract(h * 1.2 + uTime * .02), .85, 1.)) : uAccent;
-            col = mix(col, wire * (line * 1.25 + h * .8) + vec3(.012), fog);
+            float fog = exp(-tt * .45);
+            vec3 wire = (uRainbow == 1) ? hsv2rgb(vec3(fract(h * 2.2 + uTime * .02), .85, 1.)) : uAccent;
+            col = mix(col, wire * (line * 1.35 + h * 1.4) + vec3(.010), fog);
         }
     }
     frag = vec4(col, 0.);
@@ -398,12 +403,14 @@ void main() {
                   .186 + cos(uTime * .13) * .09);
     vec2 z = p;
     float it = 0.;
+    bool esc = false;
     for (int i = 0; i < 48; i++) {
         z = vec2(z.x * z.x - z.y * z.y, 2. * z.x * z.y) + c;
-        it = float(i);
-        if (dot(z, z) > 4.) break;
+        if (dot(z, z) > 4.) { it = float(i); esc = true; break; }
     }
-    float f = pow(it / 48., .6);
+    // Interior (never escapes) stays near-black; the glow is the boundary
+    // (v0.7.0 colored the interior at max brightness - a flat orange slab).
+    float f = esc ? pow(it / 48., .6) : .03;
     vec3 col = (uRainbow == 1) ? hsv2rgb(vec3(f * .9 + uTime * .02, .8, f)) : uAccent * f;
     frag = vec4(col * (.75 + uPulse * .5), 0.);
 }"#;
