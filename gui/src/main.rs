@@ -11,6 +11,7 @@ mod dsp_preview;
 mod inspector;
 mod knob;
 mod presets;
+mod profiler;
 mod profiles;
 mod settings;
 mod show;
@@ -172,6 +173,7 @@ struct App {
     tab: inspector::Tab,
     show: show::ShowState,
     frame_ms: f32, // EMA of eframe's reported per-frame CPU cost
+    profiler: profiler::Profiler,
 }
 
 /// Which name-entry modal is open.
@@ -352,6 +354,7 @@ impl App {
             tab: inspector::Tab::from_str(&ui_settings.inspector_tab),
             show: show::ShowState::new(show::ShowMode::from_str(&ui_settings.show_mode)),
             frame_ms: 0.0,
+            profiler: profiler::Profiler::default(),
             settings_cache: ui_settings,
         };
         me.commit();
@@ -449,6 +452,10 @@ impl eframe::App for App {
             self.frame_ms =
                 if self.frame_ms <= 0.0 { ms } else { self.frame_ms * 0.95 + ms * 0.05 };
         }
+        let t_update = std::time::Instant::now();
+        if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
+            self.profiler.overlay = !self.profiler.overlay;
+        }
 
         // Number keys 1-9 quickswap profiles (skipped while a text field has focus).
         if !ctx.wants_keyboard_input() {
@@ -501,6 +508,7 @@ impl eframe::App for App {
         // Read APO telemetry up front: the toolbar warning chip and the bottom
         // meter both use it.
         let tel = self.state.telemetry();
+        let t_panels = std::time::Instant::now();
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(2.0);
@@ -648,7 +656,9 @@ impl eframe::App for App {
 
         // Right-side inspector: CHAIN / VIZ / SETUP tabs.
         inspector::show(self, ctx);
+        self.profiler.add(profiler::Scope::Panels, t_panels.elapsed());
 
+        let t_hist = std::time::Instant::now();
         let wave = self.viz.snapshot();
         let spectrum = self.viz.spectrum();
         let stereo = self.viz.stereo();
@@ -699,33 +709,34 @@ impl eframe::App for App {
         } else {
             None
         };
+        self.profiler.add(profiler::Scope::Histories, t_hist.elapsed());
 
-        // Clone the persistent histories into locals so VizData borrows locals,
-        // not self (the panel closure needs &mut self for commit()).
-        let peaks_local = self.spec_peaks.clone();
-        let loud_local = self.loud_hist.clone();
-        let viz = curve::VizData {
-            layers: self.layers,
-            spectrum: &spectrum,
-            peaks: &peaks_local,
-            waveform: &wave,
-            stereo: &stereo,
-            loudness: &loud_local,
-            spectro_tex,
-        };
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let response = curve::draw(
-                ui,
-                &mut self.bands,
-                self.sample_rate,
-                self.rainbow,
-                &viz,
-                &mut self.show,
-            );
-            if response.changed {
-                self.commit();
-            }
-        });
+        // Split borrows: VizData reads the history fields while curve::draw
+        // mutates bands + show — disjoint fields, so no clones. (The old code
+        // cloned both history Vecs EVERY FRAME just to satisfy borrowck.)
+        let t_canvas = std::time::Instant::now();
+        let mut eq_changed = false;
+        {
+            let viz = curve::VizData {
+                layers: self.layers,
+                spectrum: &spectrum,
+                peaks: &self.spec_peaks,
+                waveform: &wave,
+                stereo: &stereo,
+                loudness: &self.loud_hist,
+                spectro_tex,
+            };
+            let bands = &mut self.bands;
+            let show = &mut self.show;
+            let (sample_rate, rainbow) = (self.sample_rate, self.rainbow);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                eq_changed = curve::draw(ui, bands, sample_rate, rainbow, &viz, show).changed;
+            });
+        }
+        self.profiler.add(profiler::Scope::Canvas, t_canvas.elapsed());
+        if eq_changed {
+            self.commit();
+        }
 
         // Save-as / rename modal (small centered window with a name field).
         let modal_kind = match &self.modal {
@@ -820,6 +831,12 @@ impl eframe::App for App {
             cur.save();
             self.settings_cache = cur;
         }
+
+        // Close out the profiler frame + draw the F10 overlay (drawn after
+        // commit so it never measures itself; Boxel rule).
+        self.profiler.add(profiler::Scope::Update, t_update.elapsed());
+        self.profiler.commit_frame();
+        self.profiler.draw_overlay(ctx, self.frame_ms);
 
         // Repaint ~60fps when focused; throttle to ~20fps when alt-tabbed away so we
         // stop hammering the GPU for a window the user isn't watching. (Hidden-to-tray

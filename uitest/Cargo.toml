@@ -1,0 +1,22 @@
+[package]
+name = "tronteq-uitest"
+version.workspace = true
+edition.workspace = true
+
+# Headless UI snapshot harness. Lives in its own crate because the gui crate
+# embeds a requireAdministrator manifest into every binary it builds (tests
+# included), which makes them unrunnable from a normal shell. This crate has no
+# manifest, so `cargo run -p tronteq-uitest` and its tests run anywhere.
+
+[[bin]]
+name = "uishot"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { workspace = true, features = ["glow"] }
+egui = { workspace = true }
+egui_kittest = { version = "0.33", features = ["snapshot", "wgpu"] }
+image = "0.25"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tronteq-shared = { path = "../shared" }

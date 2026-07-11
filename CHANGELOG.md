@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.5.0] - 2026-07-11 (evening arc)
+
+Make-it-shine pass: dynamic themes, a real profiler, and a headless UI harness.
+
+- **Dynamic themes**: `color.rs` (colormagic — TrontColors' math, vendored via
+  Boxel's tested Rust port) + `theme.rs` rebuilt around a runtime Palette.
+  Built-ins (Electric Cyan / Paper / Synthwave), 6 featured premades (Dracula,
+  Tokyo Night, Gruvbox, Hades Fire, Deep Ocean, Arctic Aurora), and "Roll a
+  random theme" — flavor/harmony/premade rolls through an AutoTheme deriver
+  with enforced WCAG contrast, so random is always readable. Persisted.
+- **Scoped profiler** (`profiler.rs`, Boxel pattern): update/panels/histories/
+  canvas stopwatches, EMA + last-frame spike columns, F10 overlay. Zero
+  per-frame heap. Killed the two per-frame history-Vec clones in update()
+  (split borrows instead).
+- **Headless UI harness** (`uitest/` crate, `cargo run -p tronteq-uitest`):
+  egui_kittest + wgpu renders 19 PNG snapshots — canvas dark/light, every SHOW
+  mode, About at 100%/200%, and a theme sheet incl. random rolls — reviewable
+  without launching the app. Lives outside the gui crate because the admin
+  manifest makes gui test binaries unrunnable. Caught its first real bug on
+  run one (About's display-font family panics if fonts aren't installed).
+
+## [0.4.0] - 2026-07-11 (afternoon arc)
+
+- **SHOW eye-candy modes** (VIZ tab): Bars XL (mirrored WMP-style), Scope
+  trails (phosphor ghosts), Tunnel (rotating radial spectrum + kick echo
+  rings), Particles (spectral fountain + beat bursts). Beat-reactive via a
+  bass envelope + pulse detector; mesh-batched, fixed pools, wall-clock paced.
+- Live frame-cost readout in SETUP status.
+- About window scrolls instead of overflowing the screen at high zoom.
+
 ## [0.3.0] - 2026-07-11
 
 The UI refactor: saved profiles, tabbed inspector, true light mode, persistence.
