@@ -698,6 +698,12 @@ impl eframe::App for App {
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("· {e}"));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Delivered fps, always visible (pacing proof lives here).
+                    ui.label(
+                        egui::RichText::new(format!("{:.0} fps", self.fps))
+                            .color(theme::muted())
+                            .small(),
+                    );
                     if tel.seq > 0 {
                         inout_meter(ui, tel.in_rms, tel.in_peak, tel.out_rms, tel.out_peak);
                         // ASCII on purpose: U+2192 has no coverage in Rajdhani
