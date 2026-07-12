@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3] - 2026-07-12
+
+- Julia is alive: ~3.5x faster c-orbit (the shape morph), a mid-frequency
+  shimmer epicycle, bass pushes the c-point directly, slow plane rotation,
+  bass-breathing zoom, palette cycles with time + beat phase. Verified by
+  two harness frames 3s apart showing entirely different fractal forms.
+
 ## [0.7.2] - 2026-07-12
 
 The mouse-position fps mystery, dissected and killed:
