@@ -391,9 +391,10 @@ fn setup_tab(
 
     ui.label(egui::RichText::new("STATUS").color(theme::cyan()).strong());
     ui.label(format!(
-        "{} Hz  ·  state v{}  ·  frame {:.1} ms",
+        "{} Hz  ·  state v{}  ·  {:.0} fps  ·  frame {:.1} ms",
         app.sample_rate as u32,
         app.state.version(),
+        app.fps,
         app.frame_ms,
     ));
 }
@@ -455,9 +456,12 @@ fn data_tab(ui: &mut egui::Ui, app: &App) {
         ("canvas", profiler::Scope::Canvas),
     ];
     ui.label(
-        egui::RichText::new(format!("frame {:.2} ms  (F10 = overlay)", app.frame_ms))
-            .color(theme::text())
-            .small(),
+        egui::RichText::new(format!(
+            "{:.0} fps  ·  frame {:.2} ms  (F10 = overlay)",
+            app.fps, app.frame_ms
+        ))
+        .color(theme::text())
+        .small(),
     );
     for (name, s) in scopes {
         let (ema, last) = app.profiler.ms(s);

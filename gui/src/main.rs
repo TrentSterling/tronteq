@@ -156,7 +156,9 @@ struct App {
     _tray: Option<TrayIcon>,
     app_hwnd: isize,
     visible: Arc<AtomicBool>, // false while hidden-to-tray -> slow idle repaint
-    focused: Arc<AtomicBool>, // published for the repaint heartbeat thread
+    fps_frames: u32,
+    fps_t0: std::time::Instant,
+    fps: f32, // measured delivered framerate (DATA/SETUP readout)
 
     // Output picker
     devices: Vec<devices::Device>,
@@ -301,27 +303,45 @@ impl App {
         // Tracks shown vs hidden-to-tray so update() can drop to a slow idle
         // repaint instead of burning a core at 60fps with no window on screen.
         let visible = Arc::new(AtomicBool::new(true));
-        let focused = Arc::new(AtomicBool::new(true));
 
         // Repaint heartbeat thread (Boxel pattern): winit DEFERS
-        // request_repaint_after deadlines so pacing from update() drifts and
-        // the viz visibly stutters/rushes; a repaint request from another
-        // thread is delivered immediately. 60fps focused, 20fps unfocused,
-        // 2fps hidden-to-tray.
+        // request_repaint_after deadlines so pacing from update() drifts; a
+        // repaint request from another thread is delivered immediately.
+        //
+        // VISIBLE = LOCKED 60 regardless of focus. This is a visualizer — the
+        // whole point is watching it while another window has focus; the old
+        // focus throttle made fps depend on mouse motion (egui's reactive
+        // repaints filled the gaps only while the pointer moved). Two more
+        // pieces of the jank: Sleep(16) without raised timer resolution
+        // rounds to ~31ms on Windows (timeBeginPeriod(1) fixes it), and
+        // relative sleeps drift (absolute schedule fixes that).
         {
             let c = ctx.clone();
             let v = visible.clone();
-            let f = focused.clone();
-            std::thread::spawn(move || loop {
-                let ms = if !v.load(Ordering::Relaxed) {
-                    500
-                } else if f.load(Ordering::Relaxed) {
-                    16
-                } else {
-                    50
-                };
-                std::thread::sleep(std::time::Duration::from_millis(ms));
-                c.request_repaint();
+            std::thread::spawn(move || {
+                unsafe {
+                    let _ = windows::Win32::Media::timeBeginPeriod(1);
+                }
+                let tick = std::time::Duration::from_micros(16_666);
+                let mut next = std::time::Instant::now() + tick;
+                loop {
+                    if !v.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        next = std::time::Instant::now() + tick;
+                        c.request_repaint();
+                        continue;
+                    }
+                    let now = std::time::Instant::now();
+                    if next > now {
+                        std::thread::sleep(next - now);
+                    }
+                    next += tick;
+                    // Fell behind (system stall): resync, don't burst-catch-up.
+                    if next < std::time::Instant::now() {
+                        next = std::time::Instant::now() + tick;
+                    }
+                    c.request_repaint();
+                }
             });
         }
 
@@ -383,7 +403,9 @@ impl App {
             _tray: tray,
             app_hwnd,
             visible,
-            focused,
+            fps_frames: 0,
+            fps_t0: std::time::Instant::now(),
+            fps: 0.0,
             devices,
             selected_device,
             apply_rx: None,
@@ -980,11 +1002,15 @@ impl eframe::App for App {
         self.profiler.commit_frame();
         self.profiler.draw_overlay(ctx, self.frame_ms);
 
-        // The heartbeat thread owns repaint pacing (60/20/2 fps by state; see
-        // App::new) — winit defers request_repaint_after deadlines, so pacing
-        // from here was never steady. We just publish focus.
-        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
-        self.focused.store(focused, Ordering::Relaxed);
+        // Delivered-FPS counter (the heartbeat thread owns pacing; this just
+        // measures what actually arrives so the jank is a number, not a vibe).
+        self.fps_frames += 1;
+        let el = self.fps_t0.elapsed().as_secs_f32();
+        if el >= 1.0 {
+            self.fps = self.fps_frames as f32 / el;
+            self.fps_frames = 0;
+            self.fps_t0 = std::time::Instant::now();
+        }
     }
 }
 
