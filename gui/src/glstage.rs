@@ -398,21 +398,30 @@ void main() {
 
 const FRAG_JULIA: &str = r#"
 void main() {
-    vec2 p = aspect(vUv) * (2.6 - uPulse * .4);
-    vec2 c = vec2(-.745 + sin(uTime * .11) * .09 + uBass * .05,
-                  .186 + cos(uTime * .13) * .09);
+    float t = uTime;
+    // Bass-breathing zoom + slow plane rotation.
+    vec2 p = aspect(vUv) * (2.4 - uPulse * .5 - uBass * .25);
+    float ra = t * .05;
+    p = mat2(cos(ra), -sin(ra), sin(ra), cos(ra)) * p;
+    // The c-orbit is what MORPHS the set: main orbit ~3.5x the old speed,
+    // a mid-frequency shimmer epicycle, and the audio pushing c directly.
+    vec2 c = vec2(-.745, .186)
+           + vec2(sin(t * .37), cos(t * .29)) * .085
+           + vec2(sin(t * 1.7), cos(t * 2.3)) * .012 * uMid
+           + vec2(uBass * .06, uPulse * .03);
     vec2 z = p;
     float it = 0.;
     bool esc = false;
-    for (int i = 0; i < 48; i++) {
+    for (int i = 0; i < 56; i++) {
         z = vec2(z.x * z.x - z.y * z.y, 2. * z.x * z.y) + c;
         if (dot(z, z) > 4.) { it = float(i); esc = true; break; }
     }
-    // Interior (never escapes) stays near-black; the glow is the boundary
-    // (v0.7.0 colored the interior at max brightness - a flat orange slab).
-    float f = esc ? pow(it / 48., .6) : .03;
-    vec3 col = (uRainbow == 1) ? hsv2rgb(vec3(f * .9 + uTime * .02, .8, f)) : uAccent * f;
-    frag = vec4(col * (.75 + uPulse * .5), 0.);
+    // Interior stays near-black; the boundary carries the glow.
+    float f = esc ? pow(it / 56., .55) : .03;
+    vec3 col = (uRainbow == 1)
+        ? hsv2rgb(vec3(f * .9 + t * .06 + uPhase * .15, .8, f))
+        : uAccent * f;
+    frag = vec4(col * (.8 + uPulse * .6), 0.);
 }"#;
 
 const FRAG_PRESENT: &str = r#"#version 330 core
