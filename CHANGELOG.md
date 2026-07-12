@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.2] - 2026-07-12
+
+The mouse-position fps mystery, dissected and killed:
+
+- egui repaints reactively on pointer events (mouse motion = bonus frames),
+  the old focus throttle dropped unfocused-but-visible to 20fps (wrong for a
+  visualizer you watch while working), and Sleep(16) without raised timer
+  resolution rounds to ~31ms. Net effect: smooth while hovering, janky when
+  still. All three fixed.
+- Heartbeat now: timeBeginPeriod(1) + absolute-schedule 16.6ms ticks with
+  stall resync; VISIBLE = full rate regardless of focus; tray = 2fps.
+- Delivered-FPS counter in the bottom bar + DATA ENGINE (cadence is a number).
+  Verified by self-capture: 120 fps, mouse untouched, window unfocused
+  (vsync-locked to the high-refresh panel; dt-based sim keeps speeds correct).
+
 ## [0.7.1] - 2026-07-12
 
 Three shader fixes, all caught by the self-capture verify pipe (AI vision
