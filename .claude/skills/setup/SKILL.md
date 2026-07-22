@@ -25,6 +25,15 @@ Get-ChildItem . -Name
   - Not built yet → go to **step 1 (source build)** below first.
   - Already built → skip straight to **step 2**.
 
+**No toolchain and don't want to build?** Grab the prebuilt release instead
+(needs GitHub read access to the private repo + `gh auth login`):
+```powershell
+gh release download v0.8.0 -R TrentSterling/tronteq
+Expand-Archive .\TrontEQ.zip -DestinationPath .\TrontEQ ; cd .\TrontEQ
+```
+That extracted folder is the **prebuilt dist** layout — the user can just
+double-click `Install TrontEQ.cmd`, or continue with **step 2** below.
+
 ## 1. Source build (only if you're in a repo root with no prior build)
 
 Confirm the toolchain is present, then build:

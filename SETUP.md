@@ -24,8 +24,15 @@ the *same* elevated pass and asks for exactly **one** reboot.
 
 ## Prebuilt fast path
 
-1. Get `dist\TrontEQ\` onto the machine (zip it from the main PC via
-   `make-dist.ps1`, copy over, extract). You should have:
+1. Get the bundle onto the machine. **Easiest: pull it from the GitHub
+   release** (needs read access to the private repo, and `gh auth login`):
+   ```powershell
+   gh release download v0.8.0 -R TrentSterling/tronteq
+   Expand-Archive .\TrontEQ.zip -DestinationPath .\TrontEQ
+   cd .\TrontEQ
+   ```
+   (Or build it on the main PC via `make-dist.ps1` and copy `dist\TrontEQ\`
+   over by share/USB.) Either way you should have:
    ```
    dist\TrontEQ\
      TrontEqApo.dll
