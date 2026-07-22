@@ -10,6 +10,8 @@
 #include <audioenginebaseapo.h>
 #include <baseaudioprocessingobject.h>
 
+#include <vector>
+
 #include "EqState.h"
 #include "Biquad.h"
 #include "SharedState.h"
@@ -70,8 +72,17 @@ private:
         uint8_t bypass = 1;
         float preamp_db = 0.0f;
         Dynamics dynamics{};
+        float delay_ms = 0.0f;
     };
     LocalState m_cached;
+
+    // A/V-sync delay ring buffer (interleaved frames * channels). Allocated in
+    // LockForProcess (not RT-safe there is fine); applied per-buffer in
+    // APOProcess (must stay allocation-free there).
+    std::vector<float> m_delayBuf;
+    uint32_t m_delayMaxFrames = 0;
+    uint32_t m_delayWrite = 0;
+    uint32_t m_delayFramesPrev = 0;
 
     // Covers 7.1.4 (12) and 9.1.6 (16). >16ch still clamps (22.2 is essentially
     // nonexistent on consumer Windows); raising further only grows m_state.

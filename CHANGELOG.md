@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0] - 2026-07-21
+
+- **A/V-sync delay.** A new amber knob at the top of the CHAIN tab (0 to 2000 ms)
+  plus -25/-5/+5/+25 ms fine trims and a status-bar DELAY readout. For when a
+  video's audio runs ahead of the picture: open TrontEQ over it and dial in a
+  delay live until the lips line up. delay = 0 keeps the zero-latency path
+  byte-for-byte identical, so it's a per-session opt-in, applied as a ring
+  buffer in the APO after the whole chain. Skipped while bypassed.
+- IPC grew 216 to 224 bytes (delay_ms at offset 192 + reserved pad). Old
+  state.bin files migrate to delay 0, and the APO refuses to trust delay bytes
+  from a pre-224 file, so a phantom delay can't sneak in during the DLL swap.
+- **Portable dev-mode.** bootstrap.ps1 + SETUP.md + a /setup Claude skill +
+  make-dist.ps1, so TrontEQ drops onto a fresh machine (prebuilt path needs no
+  Rust/VS/SDK) and comes up with a single reboot. Build/run/autostart code
+  paths de-hardcoded off C:\trontstack\tronteq.
+
 ## [0.7.3] - 2026-07-12
 
 - Julia is alive: ~3.5x faster c-orbit (the shape morph), a mid-frequency

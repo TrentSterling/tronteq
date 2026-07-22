@@ -44,6 +44,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut tab = app.tab;
     let mut preamp = app.preamp_db;
     let mut d = app.dynamics;
+    let mut delay = app.delay_ms;
     let mut chain_changed = false;
     let mut layers = app.layers;
     let mut rainbow = app.rainbow;
@@ -68,7 +69,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.separator();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 match tab {
-                    Tab::Chain => chain_tab(ui, &mut preamp, &mut d, &mut chain_changed),
+                    Tab::Chain => chain_tab(ui, &mut preamp, &mut d, &mut delay, &mut chain_changed),
                     Tab::Viz => viz_tab(ui, &mut layers, &mut rainbow, &mut show_mode),
                     Tab::Data => data_tab(ui, app),
                     Tab::Setup => setup_tab(
@@ -108,16 +109,47 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     if chain_changed {
         app.preamp_db = preamp;
         app.dynamics = d;
+        app.delay_ms = delay;
         app.commit();
     }
 }
 
 /// The signal chain: preamp + compressor / limiter / auto-loudness knobs and
 /// their per-component presets. Content unchanged from the pre-tab panel.
-fn chain_tab(ui: &mut egui::Ui, preamp: &mut f32, d: &mut Dynamics, changed: &mut bool) {
+fn chain_tab(
+    ui: &mut egui::Ui,
+    preamp: &mut f32,
+    d: &mut Dynamics,
+    delay: &mut f32,
+    changed: &mut bool,
+) {
     let comp_acc = theme::cyan();
     let lim_acc = egui::Color32::from_rgb(255, 120, 120);
     let agc_acc = theme::ok();
+    let sync_acc = egui::Color32::from_rgb(255, 190, 90);
+
+    ui.label(egui::RichText::new("A/V SYNC").color(sync_acc).strong());
+    ui.horizontal_wrapped(|ui| {
+        *changed |= knob::knob(ui, delay, 0.0..=2000.0, "delay", " ms", 0, false, sync_acc);
+    });
+    ui.horizontal_wrapped(|ui| {
+        for (label, step) in [("-25", -25.0), ("-5", -5.0), ("+5", 5.0), ("+25", 25.0)] {
+            if ui.button(label).clicked() {
+                *delay = (*delay + step).clamp(0.0, 2000.0);
+                *changed = true;
+            }
+        }
+        if ui.button("Reset 0").clicked() {
+            *delay = 0.0;
+            *changed = true;
+        }
+    });
+    ui.label(
+        egui::RichText::new("Delay audio to match late video. Affects all sound on this device.")
+            .color(theme::muted())
+            .small(),
+    );
+    ui.separator();
 
     ui.label(egui::RichText::new("SIGNAL CHAIN").color(theme::cyan()).strong());
     ui.separator();

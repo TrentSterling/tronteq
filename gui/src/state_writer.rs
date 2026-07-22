@@ -30,12 +30,14 @@ impl StateWriter {
         bypass: bool,
         preamp_db: f32,
         dynamics: &Dynamics,
+        delay_ms: f32,
     ) {
         self.handle.write(|w| {
             w.set_bands(bands);
             w.set_bypass(bypass);
             w.set_preamp(preamp_db);
             w.set_dynamics(dynamics);
+            w.set_delay(delay_ms);
         });
         let snap = self.handle.snapshot();
         self.last_committed = snap.version;

@@ -12,7 +12,7 @@
 # Results -> dev-cycle.log (append, timestamped).
 
 $ErrorActionPreference = 'Continue'
-$root = 'C:\trontstack\tronteq'
+$root = $PSScriptRoot
 $rel  = "$root\target\release"
 $log  = "$root\dev-cycle.log"
 Set-Location $root

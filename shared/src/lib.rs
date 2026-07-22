@@ -1,6 +1,6 @@
 //! IPC contract between the Rust GUI and the C++ APO.
 //!
-//! Lives as a 192-byte file at `C:\ProgramData\TrontEq\state.bin`.
+//! Lives as a 224-byte file at `C:\ProgramData\TrontEq\state.bin`.
 //! Both processes `CreateFileMapping` the same file, `MapViewOfFile`,
 //! and read/write the shared struct using a seqlock on `version`.
 
@@ -15,10 +15,11 @@ use serde::{Deserialize, Serialize};
 pub const STATE_FILE: &str = r"C:\ProgramData\TrontEq\state.bin";
 pub const STATE_DIR: &str = r"C:\ProgramData\TrontEq";
 /// Full file size: GUI-owned state (seqlock) + APO-owned telemetry block.
-pub const STATE_BYTES: usize = 216;
-/// State portion only (version + bands + preamp + dynamics). The APO can read
-/// this much from an older file even before the GUI extends it to STATE_BYTES.
-pub const STATE_CORE_BYTES: usize = 192;
+pub const STATE_BYTES: usize = 224;
+/// State portion only (version + bands + preamp + dynamics + delay_ms +
+/// _reserved). The APO can read this much from an older file even before the
+/// GUI extends it to STATE_BYTES.
+pub const STATE_CORE_BYTES: usize = 200;
 pub const NUM_BANDS: usize = 8;
 
 #[repr(u32)]
@@ -160,14 +161,21 @@ pub struct EqState {
     pub bypass: u8,
     pub _pad: [u8; 3],
     pub dynamics: Dynamics,
+    pub delay_ms: f32,     // A/V-sync delay, ms; GUI-written, seqlock'd like preamp
+    pub _reserved: [u8; 4], // 8-byte align + future headroom
     pub telemetry: Telemetry, // APO-written; not under the seqlock
 }
 
 const _: () = {
     assert!(std::mem::size_of::<EqState>() == STATE_BYTES);
     assert!(std::mem::align_of::<EqState>() == 8);
-    // Telemetry must start exactly at the end of the legacy 192-byte state so an
+    // delay_ms sits right after dynamics, at the end of the (new) 200-byte
+    // core state, and telemetry starts exactly at STATE_CORE_BYTES so an
     // un-extended file keeps working and only the appended bytes are new.
+    assert!(std::mem::offset_of!(EqState, delay_ms) == 192);
+    assert!(std::mem::offset_of!(EqState, _reserved) == 196);
+    assert!(std::mem::offset_of!(EqState, telemetry) == STATE_CORE_BYTES);
+    assert!(std::mem::offset_of!(EqState, telemetry) == 200);
     assert!(std::mem::size_of::<Telemetry>() == STATE_BYTES - STATE_CORE_BYTES);
 };
 
@@ -187,6 +195,8 @@ impl EqState {
             bypass: 0,
             _pad: [0; 3],
             dynamics: Dynamics::default_passive(),
+            delay_ms: 0.0,
+            _reserved: [0; 4],
             telemetry: Telemetry::default(),
         }
     }
@@ -217,9 +227,10 @@ impl StateHandle {
             .create(true)
             .open(path)?;
         let meta = file.metadata()?;
-        if meta.len() == 0 {
-            file.set_len(STATE_BYTES as u64)?;
-        } else if meta.len() < STATE_BYTES as u64 {
+        // Captured before set_len so we can tell a fresh/empty file apart from
+        // an existing pre-224 file that is about to grow (migration case below).
+        let old_len = meta.len();
+        if old_len < STATE_BYTES as u64 {
             file.set_len(STATE_BYTES as u64)?;
         }
 
@@ -243,9 +254,25 @@ impl StateHandle {
                 (*ptr).bypass = init.bypass;
                 (*ptr)._pad = init._pad;
                 (*ptr).dynamics = init.dynamics;
+                (*ptr).delay_ms = init.delay_ms;
+                (*ptr)._reserved = init._reserved;
                 // Publish version 2 (even, committed) so readers see the init.
                 (&(*ptr).version).store(2, Ordering::Release);
             }
+        } else if old_len > 0 && old_len < STATE_BYTES as u64 {
+            // An existing pre-224 file that just grew. Its telemetry block used
+            // to live at offset 192 -- exactly where delay_ms now sits -- so the
+            // newly-mapped delay_ms/telemetry bytes are stale APO telemetry, not
+            // a real delay setting. Force delay_ms to 0 and zero the relocated
+            // telemetry block under a seqlock write so neither a phantom delay
+            // nor a stale `seq` (misread as "APO is live") leaks through.
+            let handle = StateHandle { _mmap: mmap, ptr };
+            handle.write(|w| unsafe {
+                (*w.ptr).delay_ms = 0.0;
+                (*w.ptr)._reserved = [0; 4];
+                (*w.ptr).telemetry = Telemetry::default();
+            });
+            return Ok(handle);
         }
 
         Ok(StateHandle { _mmap: mmap, ptr })
@@ -265,10 +292,11 @@ impl StateHandle {
                 let preamp_db = (*self.ptr).preamp_db;
                 let bypass = (*self.ptr).bypass;
                 let dynamics = (*self.ptr).dynamics;
+                let delay_ms = (*self.ptr).delay_ms;
                 std::sync::atomic::fence(Ordering::Acquire);
                 let v2 = (&(*self.ptr).version).load(Ordering::Acquire);
                 if v1 == v2 {
-                    return Snapshot { version: v2, bands, preamp_db, bypass, dynamics };
+                    return Snapshot { version: v2, bands, preamp_db, bypass, dynamics, delay_ms };
                 }
             }
         }
@@ -311,6 +339,9 @@ impl EqStateWrite {
     pub fn set_dynamics(&mut self, d: &Dynamics) {
         unsafe { (*self.ptr).dynamics = *d; }
     }
+    pub fn set_delay(&mut self, ms: f32) {
+        unsafe { (*self.ptr).delay_ms = ms; }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -320,6 +351,7 @@ pub struct Snapshot {
     pub preamp_db: f32,
     pub bypass: u8,
     pub dynamics: Dynamics,
+    pub delay_ms: f32,
 }
 
 impl Snapshot {
@@ -333,12 +365,21 @@ mod tests {
     #[test]
     fn layout_matches_abi() {
         // Mirrored byte-for-byte in apo/src/EqState.h.
+        assert_eq!(STATE_BYTES, 224);
+        assert_eq!(STATE_CORE_BYTES, 200);
         assert_eq!(std::mem::size_of::<EqState>(), STATE_BYTES);
         assert_eq!(std::mem::align_of::<EqState>(), 8);
         assert_eq!(std::mem::size_of::<Band>(), 16);
         assert_eq!(std::mem::size_of::<Dynamics>(), 48);
         assert_eq!(std::mem::size_of::<Telemetry>(), 24);
         assert_eq!(STATE_BYTES - STATE_CORE_BYTES, 24);
+
+        // Exact offset math from the spec's layout table.
+        assert_eq!(std::mem::offset_of!(EqState, dynamics), 144);
+        assert_eq!(std::mem::offset_of!(EqState, delay_ms), 192);
+        assert_eq!(std::mem::offset_of!(EqState, _reserved), 196);
+        assert_eq!(std::mem::offset_of!(EqState, telemetry), 200);
+        assert_eq!(std::mem::offset_of!(EqState, telemetry), STATE_CORE_BYTES);
     }
 
     #[test]
@@ -401,6 +442,7 @@ mod tests {
         assert_eq!(s.bands[0].freq, DEFAULT_FREQS[0]);
         assert_eq!(s.bands[7].freq, DEFAULT_FREQS[7]);
         assert_eq!(s.dynamics.limiter_enabled, 1);
+        assert_eq!(s.delay_ms, 0.0);
         drop(h);
         let _ = std::fs::remove_file(&p);
     }
@@ -423,6 +465,7 @@ mod tests {
             w.set_preamp(-3.0);
             w.set_bypass(true);
             w.set_dynamics(&dynamics);
+            w.set_delay(437.5);
         });
 
         let s = h.snapshot();
@@ -433,6 +476,7 @@ mod tests {
         assert!(s.is_bypassed());
         assert_eq!(s.dynamics.comp_enabled, 1);
         assert_eq!(s.dynamics.comp_makeup_db, 4.0);
+        assert_eq!(s.delay_ms, 437.5);
         drop(h);
         let _ = std::fs::remove_file(&p);
     }
@@ -448,6 +492,33 @@ mod tests {
         let h2 = StateHandle::open_at(&p).unwrap();
         assert_eq!(h2.snapshot().preamp_db, 7.5);
         drop(h2);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn migration_from_pre_delay_file_zeroes_phantom_delay() {
+        let p = temp_path("migration");
+        // Simulate a pre-224 (216-byte) state.bin: committed version (so
+        // open_at doesn't treat it as a fresh/empty file), zeroed bands/preamp/
+        // bypass/pad/dynamics, and NONZERO bytes at offset 192 -- exactly
+        // where the old telemetry block lived and where delay_ms now sits.
+        // A naive grow-in-place would let those stale bytes leak in as a
+        // phantom delay (and a stale telemetry `seq` misread as "APO live").
+        const OLD_STATE_BYTES: usize = 216;
+        let mut raw = vec![0u8; OLD_STATE_BYTES];
+        raw[0..8].copy_from_slice(&2u64.to_le_bytes()); // committed, not fresh
+        for (i, b) in raw[192..OLD_STATE_BYTES].iter_mut().enumerate() {
+            *b = (i as u8) + 1; // nonzero old-telemetry bytes at the old offset
+        }
+        std::fs::write(&p, &raw).unwrap();
+
+        let h = StateHandle::open_at(&p).unwrap();
+        let s = h.snapshot();
+        assert_eq!(s.delay_ms, 0.0);
+        // The relocated telemetry block must be cleared too, not carry stale
+        // bytes forward (a nonzero seq would look like "the APO is live").
+        assert_eq!(h.telemetry().seq, 0);
+        drop(h);
         let _ = std::fs::remove_file(&p);
     }
 }

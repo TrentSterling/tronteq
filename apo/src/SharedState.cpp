@@ -21,6 +21,8 @@ void FillDefault(EqState& out) {
     out.preamp_db = 0.0f;
     out.bypass = 1; // default: bypass until the GUI/CLI explicitly enables
     out._pad[0] = out._pad[1] = out._pad[2] = 0;
+    out.delay_ms = 0.0f; // zero-latency by default; A/V sync is opt-in
+    out._reserved[0] = out._reserved[1] = out._reserved[2] = out._reserved[3] = 0;
     Dynamics d{};
     d.comp_threshold_db = -18.0f; d.comp_ratio = 2.0f; d.comp_attack_ms = 10.0f;
     d.comp_release_ms = 120.0f; d.comp_knee_db = 6.0f; d.comp_makeup_db = 0.0f;
@@ -46,6 +48,7 @@ void SharedStateReader::Close() {
         m_file = INVALID_HANDLE_VALUE;
     }
     m_writable = false;
+    m_hasDelay = false;
 }
 
 void SharedStateReader::TryOpen() {
@@ -106,6 +109,11 @@ void SharedStateReader::TryOpen() {
     m_mapping = m;
     m_view = reinterpret_cast<EqState*>(view);
     m_writable = writable && telemetryFits;
+    // delay_ms is only trustworthy on a full 224-byte file. On an old 216-byte
+    // state.bin its offset (192) holds the previous telemetry.seq bytes, which as a
+    // float could clamp to a huge spurious delay. Gate the read on the full size so
+    // this is code-enforced, not merely deploy-order-enforced.
+    m_hasDelay = telemetryFits;
 }
 
 void SharedStateReader::WriteTelemetry(float inPeak, float inRms,
@@ -139,6 +147,7 @@ bool SharedStateReader::Read(EqState& out) const {
         out.preamp_db = m_view->preamp_db;
         out.bypass = m_view->bypass;
         out.dynamics = m_view->dynamics;
+        out.delay_ms = m_hasDelay ? m_view->delay_ms : 0.0f;
 
         std::atomic_thread_fence(std::memory_order_acquire);
         uint64_t v2 = m_view->version.load(std::memory_order_acquire);

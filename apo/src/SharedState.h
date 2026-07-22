@@ -36,6 +36,8 @@ private:
     HANDLE m_mapping = nullptr;
     EqState* m_view = nullptr;
     bool m_writable = false; // true when telemetry can be written back
+    bool m_hasDelay = false; // true only for a full 224-byte file (delay_ms is real,
+                             // not stale bytes from a pre-delay 216-byte state.bin)
 };
 
 // Populate `out` with flat bands at the POC default frequencies + bypass on.

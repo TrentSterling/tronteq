@@ -1,6 +1,7 @@
 // EqState.h — C mirror of shared/src/lib.rs::EqState.
-// UPDATE BOTH if you change either. 216 bytes, 8-byte aligned
-// (version + bands + preamp + dynamics + APO-written telemetry).
+// UPDATE BOTH if you change either. 224 bytes, 8-byte aligned
+// (version + bands + preamp + dynamics + delay_ms + reserved + APO-written
+// telemetry).
 #pragma once
 
 #include <cstdint>
@@ -11,8 +12,9 @@
 namespace tronteq {
 
 constexpr std::size_t kNumBands = 8;
-constexpr std::size_t kStateBytes = 216;      // full file incl. telemetry
-constexpr std::size_t kStateCoreBytes = 192;  // state portion (no telemetry)
+constexpr std::size_t kStateBytes = 224;      // full file incl. telemetry
+constexpr std::size_t kStateCoreBytes = 200;  // state portion (no telemetry)
+constexpr float kMaxDelayMs = 2000.0f;        // A/V-sync delay ceiling
 
 enum class BandKind : uint32_t {
     Peak = 0,
@@ -68,11 +70,17 @@ struct EqState {
     uint8_t bypass;
     uint8_t _pad[3];
     Dynamics dynamics;
+    float delay_ms;                 // A/V-sync delay, ms (GUI-written, seqlock'd)
+    uint8_t _reserved[4];           // 8-byte align + future headroom
     Telemetry telemetry;            // APO-written; not under the seqlock
 };
 static_assert(sizeof(EqState) == kStateBytes, "EqState ABI drift — mirror shared/src/lib.rs");
+static_assert(offsetof(EqState, delay_ms) == 192,
+    "delay_ms must sit at offset 192 (mirror shared/src/lib.rs)");
+static_assert(offsetof(EqState, _reserved) == 196,
+    "_reserved must sit at offset 196 (mirror shared/src/lib.rs)");
 static_assert(offsetof(EqState, telemetry) == kStateCoreBytes,
-    "telemetry must start at the end of the legacy 192-byte state");
+    "telemetry must start at the end of the 200-byte state (incl. delay_ms)");
 static_assert(alignof(EqState) == 8, "EqState must be 8-byte aligned for atomic version");
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
     "atomic<uint64_t> must be lock-free for seqlock to be RT-safe");

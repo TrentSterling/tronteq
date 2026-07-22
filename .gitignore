@@ -1,5 +1,6 @@
 target/
 apo/build/
+dist/
 SAMPLES/
 *.pfx
 *.cer

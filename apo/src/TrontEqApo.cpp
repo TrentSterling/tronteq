@@ -103,6 +103,16 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::LockForProcess(
     m_coeffsReady = false;
     m_dynamics.Reset(static_cast<double>(m_framesPerSecond > 0 ? m_framesPerSecond : 48000));
 
+    // A/V-sync delay ring: sized for the worst case (kMaxDelayMs) at the real
+    // sample rate. Heap allocation is safe here (not the RT thread).
+    {
+        const double fs = m_framesPerSecond > 0 ? static_cast<double>(m_framesPerSecond) : 48000.0;
+        m_delayMaxFrames = static_cast<uint32_t>(std::ceil(kMaxDelayMs / 1000.0 * fs)) + 1;
+        m_delayBuf.assign(static_cast<size_t>(m_delayMaxFrames) * m_channels, 0.0f);
+        m_delayWrite = 0;
+        m_delayFramesPrev = 0;
+    }
+
     m_shared.TryOpen(); // open the shared-state mapping now; no per-buffer reopen
 
     return S_OK;
@@ -192,6 +202,7 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
             m_cached.preamp_db = tmp.preamp_db;
             m_cached.bypass = tmp.bypass;
             m_cached.dynamics = tmp.dynamics;
+            m_cached.delay_ms = tmp.delay_ms;
         }
     }
 
@@ -304,6 +315,36 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     }
 
     m_shared.WriteTelemetry(inPeak, inRms, outPeak, outRms, grDb);
+
+    // ---- A/V-sync delay (final step) ----------------------------------------
+    // Ring buffer over the already-processed output. RT-safe: no allocation, no
+    // syscalls, no logging. delay_ms == 0 -> skipped entirely (zero-latency path
+    // stays byte-for-byte identical).
+    const double fs = m_framesPerSecond > 0 ? static_cast<double>(m_framesPerSecond) : 48000.0;
+    float dms = std::isfinite(m_cached.delay_ms) ? m_cached.delay_ms : 0.0f;
+    dms = (std::max)(0.0f, (std::min)(kMaxDelayMs, dms));
+    uint32_t delayFrames = static_cast<uint32_t>(std::lround(dms / 1000.0f * static_cast<float>(fs)));
+    if (m_delayMaxFrames > 0 && delayFrames >= m_delayMaxFrames) {
+        delayFrames = m_delayMaxFrames - 1;
+    }
+
+    if (delayFrames > 0 && !m_delayBuf.empty()) {
+        if (m_delayFramesPrev == 0) {
+            std::fill(m_delayBuf.begin(), m_delayBuf.end(), 0.0f); // clean 0->N enable
+        }
+        const uint32_t cap = m_delayMaxFrames;
+        const uint32_t ch = m_channels;
+        for (UINT32 f = 0; f < in->u32ValidFrameCount; ++f) {
+            // write current output frame, then read a delayed one back into it
+            float* slotW = &m_delayBuf[static_cast<size_t>(m_delayWrite) * ch];
+            float* frame = &outBuf[static_cast<size_t>(f) * ch];
+            std::memcpy(slotW, frame, ch * sizeof(float));
+            uint32_t rp = (m_delayWrite + cap - delayFrames) % cap;
+            std::memcpy(frame, &m_delayBuf[static_cast<size_t>(rp) * ch], ch * sizeof(float));
+            m_delayWrite = (m_delayWrite + 1) % cap;
+        }
+    }
+    m_delayFramesPrev = delayFrames;
 }
 
 } // namespace tronteq

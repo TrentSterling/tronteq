@@ -142,6 +142,7 @@ struct App {
     // Signal chain (preamp + dynamics)
     preamp_db: f32,
     dynamics: Dynamics,
+    delay_ms: f32,
     show_about: bool,
     rainbow: bool,
     viz: visualizer::Visualizer,
@@ -239,6 +240,7 @@ impl App {
         } else {
             Dynamics::default_passive()
         };
+        let delay_ms = if snap.version > 0 { snap.delay_ms } else { 0.0 };
 
         let devices = devices::list().unwrap_or_default();
         let selected_device = devices.iter().position(|d| d.is_default).unwrap_or(0);
@@ -391,6 +393,7 @@ impl App {
             last_error: None,
             preamp_db,
             dynamics,
+            delay_ms,
             show_about: false,
             rainbow: ui_settings.rainbow,
             viz: visualizer::Visualizer::start(),
@@ -455,8 +458,13 @@ impl App {
     }
 
     fn commit(&mut self) {
-        self.state
-            .write_state(&self.bands, self.bypass, self.preamp_db, &self.dynamics);
+        self.state.write_state(
+            &self.bands,
+            self.bypass,
+            self.preamp_db,
+            &self.dynamics,
+            self.delay_ms,
+        );
     }
 
     /// Reset the whole chain to defaults: flat EQ, 0 preamp, passive dynamics.
@@ -704,6 +712,13 @@ impl eframe::App for App {
                             .color(theme::muted())
                             .small(),
                     );
+                    if self.delay_ms > 0.0 {
+                        ui.label(
+                            egui::RichText::new(format!("DELAY {:.0} ms", self.delay_ms))
+                                .color(egui::Color32::from_rgb(255, 190, 90))
+                                .small(),
+                        );
+                    }
                     if tel.seq > 0 {
                         inout_meter(ui, tel.in_rms, tel.in_peak, tel.out_rms, tel.out_peak);
                         // ASCII on purpose: U+2192 has no coverage in Rajdhani
