@@ -619,8 +619,20 @@ impl eframe::App for App {
                 } else {
                     theme::cyan()
                 };
-                // Wordmark doubles as a window drag handle (custom chrome: no OS
-                // title bar), so a packed toolbar always has a grab point.
+                // App icon + wordmark double as a window drag handle (custom
+                // chrome: no OS title bar), so a packed toolbar always has a
+                // grab point.
+                if let Some(tex) = about::icon_texture(ctx, &mut self.about_icon) {
+                    let ic = ui.add(
+                        egui::Image::new(egui::load::SizedTexture::new(
+                            tex.id(),
+                            egui::vec2(22.0, 22.0),
+                        ))
+                        .corner_radius(5.0)
+                        .sense(egui::Sense::click_and_drag()),
+                    );
+                    window_chrome::drag_window(ctx, &ic);
+                }
                 let wm = ui.add(
                     egui::Label::new(
                         egui::RichText::new("TrontEQ")

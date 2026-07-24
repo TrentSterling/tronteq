@@ -5,6 +5,24 @@ use eframe::egui;
 
 use crate::theme;
 
+/// Lazy-load the app icon (bars-over-face) as a texture. Shared by the About
+/// window and the toolbar wordmark.
+pub fn icon_texture(
+    ctx: &egui::Context,
+    icon: &mut Option<egui::TextureHandle>,
+) -> Option<egui::TextureHandle> {
+    if icon.is_none() {
+        if let Ok(img) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [img.width as usize, img.height as usize],
+                &img.rgba,
+            );
+            *icon = Some(ctx.load_texture("tronteq-about", color, egui::TextureOptions::LINEAR));
+        }
+    }
+    icon.clone()
+}
+
 pub fn show(
     ctx: &egui::Context,
     show_about: &mut bool,
@@ -15,23 +33,16 @@ pub fn show(
         return;
     }
 
-    // Lazy-load the eyepatch face/icon texture on first open.
-    if icon.is_none() {
-        if let Ok(img) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
-            let color = egui::ColorImage::from_rgba_unmultiplied(
-                [img.width as usize, img.height as usize],
-                &img.rgba,
-            );
-            *icon = Some(ctx.load_texture("tronteq-about", color, egui::TextureOptions::LINEAR));
-        }
-    }
-    let icon_tex = icon.clone();
+    let icon_tex = icon_texture(ctx, icon);
     let mut close_about = false;
 
     egui::Window::new("About TrontEQ")
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        // Centered on open but NOT `.anchor()`ed — anchored windows are pinned
+        // and can't be dragged out of the way.
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         // Never taller than the viewport (at 200% zoom the content used to
         // overflow both screen edges with no way to scroll); scroll instead.
         .max_height(ctx.content_rect().height() * 0.85)
