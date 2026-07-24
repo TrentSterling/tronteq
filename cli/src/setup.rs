@@ -265,7 +265,11 @@ pub fn clear_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
 /// audiodg's app-container token. The dev signing cert is re-protected below.
 pub fn grant_programdata_acl(dir: &str) -> Result<()> {
     let icacls = system32("icacls.exe");
-    // ALL APPLICATION PACKAGES, ALL RESTRICTED APPLICATION PACKAGES, LOCAL SERVICE.
+    // ALL APPLICATION PACKAGES, ALL RESTRICTED APPLICATION PACKAGES, LOCAL SERVICE,
+    // plus BUILTIN\Users: the GUI runs at MEDIUM integrity now, and everything it
+    // writes here (state.bin seqlock, settings.json, profiles/, crash.log) was
+    // historically created by an elevated process — without the Users grant a
+    // Medium GUI opens state.bin read-only and every knob goes dead.
     let status = Command::new(&icacls)
         .args([
             dir,
@@ -275,6 +279,8 @@ pub fn grant_programdata_acl(dir: &str) -> Result<()> {
             "*S-1-15-2-2:(OI)(CI)(M)",
             "/grant",
             "*S-1-5-19:(OI)(CI)(M)",
+            "/grant",
+            "*S-1-5-32-545:(OI)(CI)(M)",
             "/T",
             "/C",
         ])
@@ -325,13 +331,14 @@ fn gui_exe_path() -> Result<String> {
     Ok(dir.join("tronteq.exe").to_string_lossy().into_owned())
 }
 
-/// Create a Scheduled Task that launches the GUI elevated at logon. Running with
-/// highest privileges from a logon task means no UAC prompt.
+/// Create a Scheduled Task that launches the GUI at logon — at LIMITED run level,
+/// because the GUI is Medium-integrity now (an elevated GUI window kills every
+/// Medium app's modifier-less global hotkey and UIPI-breaks drag/drop onto it).
 pub fn register_autostart() -> Result<()> {
     let exe = gui_exe_path()?;
     let status = Command::new(system32("schtasks.exe"))
         .args([
-            "/create", "/tn", "TrontEQ", "/tr", &exe, "/sc", "onlogon", "/rl", "HIGHEST", "/f",
+            "/create", "/tn", "TrontEQ", "/tr", &exe, "/sc", "onlogon", "/rl", "LIMITED", "/f",
         ])
         .status()
         .context("run schtasks /create")?;

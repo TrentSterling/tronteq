@@ -76,8 +76,7 @@ fn maybe_relaunch() {
         return;
     }
     match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).spawn()) {
-        // Parent is elevated (requireAdministrator manifest), so this CreateProcess
-        // inherits the elevated token with no UAC prompt.
+        // Medium-integrity parent spawns a Medium child — no UAC involved.
         Ok(child) => log_line(&format!("self-heal: relaunched pid={} after {up}s uptime", child.id())),
         Err(e) => log_line(&format!("self-heal: relaunch FAILED: {e}")),
     }

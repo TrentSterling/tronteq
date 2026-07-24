@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0] - 2026-07-23
+
+- **The GUI is no longer elevated.** Manifest went requireAdministrator ->
+  asInvoker, so TrontEQ now runs as a normal Medium-integrity window. Why it
+  matters: Windows refuses to deliver modifier-less global hotkeys registered
+  by Medium apps while an elevated window has focus — bare PrintScreen in
+  TrontSnap (and ShareX!) went dead whenever TrontEQ was focused. Elevation
+  also UIPI-broke drag/drop onto the window and focus handoff from normal apps.
+  The GUI never needed admin for its actual job (it drives the APO through the
+  state.bin memory map); only installs did.
+- "Apply EQ here" now launches tronteq-cli elevated on demand (one UAC prompt
+  per device retarget — rare). Output comes back via
+  C:\ProgramData\TrontEq\install.log; declining the prompt is a clean error.
+- install now grants BUILTIN\Users Modify on C:\ProgramData\TrontEq so the
+  Medium GUI can keep writing state.bin / settings.json / profiles.
+- The TrontEQ logon task registers at LIMITED run level (was HIGHEST).
+
 ## [0.8.0] - 2026-07-21
 
 - **A/V-sync delay.** A new amber knob at the top of the CHAIN tab (0 to 2000 ms)
