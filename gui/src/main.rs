@@ -22,6 +22,7 @@ mod theme;
 mod visualizer;
 mod vizbus;
 mod win;
+mod window_chrome;
 
 use anyhow::Result;
 use eframe::egui;
@@ -96,6 +97,9 @@ fn main() -> Result<()> {
     log_line(&format!("start pid={}", std::process::id()));
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("TrontEQ")
+        // Custom chrome: the toolbar is the title bar (window_chrome.rs owns the
+        // caption buttons, dragging, and edge-resize the OS border used to give us).
+        .with_decorations(false)
         .with_inner_size([1000.0, 460.0])
         .with_min_inner_size([800.0, 320.0]);
     // Window + taskbar icon = Trent's face (the tront.xyz favicon).
@@ -130,6 +134,9 @@ fn main() -> Result<()> {
     run.map_err(|e| anyhow::anyhow!("eframe: {e:?}"))?;
     Ok(())
 }
+
+/// How long a shuffled GL SHOW mode stays up before auto-cycling to another.
+const SHUFFLE_PERIOD: std::time::Duration = std::time::Duration::from_secs(18);
 
 struct App {
     state: state_writer::StateWriter,
@@ -177,6 +184,16 @@ struct App {
     settings_cache: settings::AppSettings,
     tab: inspector::Tab,
     show: show::ShowState,
+    /// Auto-cycle through the GL SHOW modes while one is active.
+    show_shuffle: bool,
+    /// Stackable post-fx bitmask layered over any GL SHOW mode (see
+    /// `glstage::FX_*`). 0 = off.
+    show_fx: u32,
+    /// Next scheduled shuffle switch (checked every frame, only acted on
+    /// while `show_shuffle` is on and a GL mode is active).
+    shuffle_next: std::time::Instant,
+    /// Deterministic tiny LCG state (no rand dep) for picking the next mode.
+    shuffle_rng: u32,
     frame_ms: f32, // EMA of eframe's reported per-frame CPU cost
     profiler: profiler::Profiler,
     vizbus: vizbus::VizBus,
@@ -419,6 +436,10 @@ impl App {
             modal_focus: false,
             tab: inspector::Tab::from_str(&ui_settings.inspector_tab),
             show: show::ShowState::new(show::ShowMode::from_str(&ui_settings.show_mode)),
+            show_shuffle: ui_settings.show_shuffle,
+            show_fx: ui_settings.show_fx,
+            shuffle_next: std::time::Instant::now() + SHUFFLE_PERIOD,
+            shuffle_rng: 0x9E37_79B9,
             frame_ms: 0.0,
             profiler: profiler::Profiler::default(),
             vizbus: vizbus::VizBus::new(),
@@ -590,13 +611,19 @@ impl eframe::App for App {
                 } else {
                     theme::cyan()
                 };
-                ui.label(
-                    egui::RichText::new("TrontEQ")
-                        .family(egui::FontFamily::Name("display".into()))
-                        .color(title_color)
-                        .strong()
-                        .size(23.0),
+                // Wordmark doubles as a window drag handle (custom chrome: no OS
+                // title bar), so a packed toolbar always has a grab point.
+                let wm = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("TrontEQ")
+                            .family(egui::FontFamily::Name("display".into()))
+                            .color(title_color)
+                            .strong()
+                            .size(23.0),
+                    )
+                    .sense(egui::Sense::click_and_drag()),
                 );
+                window_chrome::drag_window(ctx, &wm);
                 ui.separator();
                 // Profile chips: click = load (keys 1-9 too), right-click = manage,
                 // `*` = tweaked since save. Factory chips are ordinary profiles.
@@ -689,8 +716,16 @@ impl eframe::App for App {
                         self.tab = inspector::Tab::Setup;
                     }
                 }
+                // Caption buttons on the far right; whatever gap remains between
+                // them and the last left-side control is a window drag region.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    window_chrome::caption_buttons(ui);
+                    let gap = ui.available_rect_before_wrap();
+                    window_chrome::drag_region(ui, gap, "toolbar-drag-gap");
+                });
             });
         });
+        window_chrome::edge_resize(ctx);
 
         // Meter source: prefer the APO's real pre/post-chain telemetry (true in
         // vs out; read above the toolbar). Fall back to the WASAPI-loopback
@@ -742,6 +777,40 @@ impl eframe::App for App {
         // Right-side inspector: CHAIN / VIZ / SETUP tabs.
         inspector::show(self, ctx);
         self.profiler.add(profiler::Scope::Panels, t_panels.elapsed());
+
+        // Shuffle: auto-cycle the GL SHOW modes every ~18s while one is
+        // active. GL modes only (painter modes are excluded on purpose -
+        // shuffle is a "let it ride" showcase mode for the shader stage).
+        if self.show_shuffle && self.show.mode.gl_mode().is_some() {
+            let now = std::time::Instant::now();
+            if now >= self.shuffle_next {
+                let gl_modes: Vec<show::ShowMode> = show::ShowMode::ALL
+                    .iter()
+                    .copied()
+                    .filter(|m| m.gl_mode().is_some())
+                    .collect();
+                if gl_modes.len() > 1 {
+                    let current = self.show.mode;
+                    let mut next = current;
+                    while next == current {
+                        // Deterministic tiny xorshift32 (no rand dep).
+                        let mut x = self.shuffle_rng;
+                        x ^= x << 13;
+                        x ^= x >> 17;
+                        x ^= x << 5;
+                        self.shuffle_rng = x;
+                        next = gl_modes[x as usize % gl_modes.len()];
+                    }
+                    self.show.mode = next;
+                }
+                self.shuffle_next = now + SHUFFLE_PERIOD;
+            }
+        } else {
+            // Not actively shuffling: keep the deadline fresh so switching
+            // shuffle back on (or landing on a GL mode) doesn't fire an
+            // instant switch from a long-stale timestamp.
+            self.shuffle_next = std::time::Instant::now() + SHUFFLE_PERIOD;
+        }
 
         let t_hist = std::time::Instant::now();
         let wave = self.viz.snapshot();
@@ -834,6 +903,14 @@ impl eframe::App for App {
                 ],
                 spec: spec_arr,
                 wave: wave_arr,
+                bpm: b.bpm,
+                bpm_conf: b.bpm_conf,
+                flux: b.flux,
+                loud: ((b.loud_db + 60.0) / 60.0).clamp(0.0, 1.0),
+                crest: (b.crest_db / 24.0).clamp(0.0, 1.0),
+                corr: b.corr,
+                width: b.width,
+                fx: self.show_fx,
             }
         };
         let mut eq_changed = false;
@@ -947,6 +1024,8 @@ impl eframe::App for App {
             active_profile: self.active_profile.clone(),
             inspector_tab: self.tab.as_str().to_string(),
             show_mode: self.show.mode.as_str().to_string(),
+            show_shuffle: self.show_shuffle,
+            show_fx: self.show_fx,
             theme_name: pal.name,
             theme_colors: pal.source,
         };
