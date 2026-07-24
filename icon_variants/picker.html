@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TrontEQ Icon Picker</title>
+<style>
+  body { background:#0c1418; color:#e8f0ee; font-family:'Segoe UI',sans-serif; margin:0; padding:32px; }
+  h1 { font-weight:600; letter-spacing:1px; }
+  h1 span { color:#2ee67a; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:28px; margin-top:24px; }
+  .card { background:#131e24; border:1px solid #23333c; border-radius:14px; padding:20px; text-align:center; }
+  .card h2 { font-size:16px; margin:0 0 4px; color:#36d0f4; }
+  .card p { font-size:13px; color:#8aa0a8; margin:0 0 14px; min-height:34px; }
+  .card img.big { width:256px; height:256px; image-rendering:auto; }
+  .sizes { display:flex; justify-content:center; align-items:flex-end; gap:18px; margin-top:14px; }
+  .sizes div { font-size:11px; color:#5f757e; }
+  .sizes img { display:block; margin:0 auto 4px; background:#0c1418; }
+  .ref { opacity:.75; }
+</style>
+</head>
+<body>
+<h1>Tront<span>EQ</span> icon picker</h1>
+<p>Each card shows 256px plus taskbar/tray sizes. Current icons at the bottom for reference.</p>
+<h1 style="font-size:20px;margin-top:8px">Round 2 <span>(no headphones)</span></h1>
+<div class="grid">
+  <div class="card"><h2>7 — Chunky bars</h2><p>Fatter, fewer, glowing bars top+bottom; symmetric so it reads at 16px.</p>
+    <img class="big" src="7_chunky_bars.png">
+    <div class="sizes"><div><img src="7_chunky_bars.png" width="64" height="64">64</div><div><img src="7_chunky_bars.png" width="32" height="32">32</div><div><img src="7_chunky_bars.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>8 — Sine border</h2><p>Smooth glowing sine ring, closes cleanly around the corners.</p>
+    <img class="big" src="8_sine_border.png">
+    <div class="sizes"><div><img src="8_sine_border.png" width="64" height="64">64</div><div><img src="8_sine_border.png" width="32" height="32">32</div><div><img src="8_sine_border.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>9 — Curve v2</h2><p>Curve lower on the face, glow + dark backing gradient, band dots.</p>
+    <img class="big" src="9_curve_v2.png">
+    <div class="sizes"><div><img src="9_curve_v2.png" width="64" height="64">64</div><div><img src="9_curve_v2.png" width="32" height="32">32</div><div><img src="9_curve_v2.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>10 — Curve clean</h2><p>Same but no dots, curve even lower. Most minimal.</p>
+    <img class="big" src="10_curve_clean.png">
+    <div class="sizes"><div><img src="10_curve_clean.png" width="64" height="64">64</div><div><img src="10_curve_clean.png" width="32" height="32">32</div><div><img src="10_curve_clean.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>11 — Bars over face</h2><p>Full-bleed face, big glowing spectrum bars rising from the bottom.</p>
+    <img class="big" src="11_bars_over_face.png">
+    <div class="sizes"><div><img src="11_bars_over_face.png" width="64" height="64">64</div><div><img src="11_bars_over_face.png" width="32" height="32">32</div><div><img src="11_bars_over_face.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>12 — Framed + curve</h2><p>Family frame, dark teal border, glowing curve across the bottom band.</p>
+    <img class="big" src="12_framed_curve.png">
+    <div class="sizes"><div><img src="12_framed_curve.png" width="64" height="64">64</div><div><img src="12_framed_curve.png" width="32" height="32">32</div><div><img src="12_framed_curve.png" width="16" height="16">16</div></div></div>
+</div>
+<h1 style="font-size:20px;margin-top:32px">Round 1</h1>
+<div class="grid">
+  <div class="card"><h2>1 — EQ bars + headphones</h2><p>Family layout, spectrum-bar border, headphones on face. The full pitch.</p>
+    <img class="big" src="1_eqbars_headphones.png">
+    <div class="sizes"><div><img src="1_eqbars_headphones.png" width="64" height="64">64</div><div><img src="1_eqbars_headphones.png" width="32" height="32">32</div><div><img src="1_eqbars_headphones.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>2 — EQ bars only</h2><p>Spectrum-bar border, clean face. Closest sibling to TrontSnap.</p>
+    <img class="big" src="2_eqbars_only.png">
+    <div class="sizes"><div><img src="2_eqbars_only.png" width="64" height="64">64</div><div><img src="2_eqbars_only.png" width="32" height="32">32</div><div><img src="2_eqbars_only.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>3 — Headphones + gradient</h2><p>Green→cyan gradient border, headphones carry the audio identity.</p>
+    <img class="big" src="3_headphones_gradient.png">
+    <div class="sizes"><div><img src="3_headphones_gradient.png" width="64" height="64">64</div><div><img src="3_headphones_gradient.png" width="32" height="32">32</div><div><img src="3_headphones_gradient.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>4 — Waveform border</h2><p>Oscilloscope squiggle ring instead of bars. Scrappier look.</p>
+    <img class="big" src="4_waveform_border.png">
+    <div class="sizes"><div><img src="4_waveform_border.png" width="64" height="64">64</div><div><img src="4_waveform_border.png" width="32" height="32">32</div><div><img src="4_waveform_border.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>5 — Curve overlay</h2><p>Full-bleed face with the glowing 8-band curve from the app.</p>
+    <img class="big" src="5_curve_overlay.png">
+    <div class="sizes"><div><img src="5_curve_overlay.png" width="64" height="64">64</div><div><img src="5_curve_overlay.png" width="32" height="32">32</div><div><img src="5_curve_overlay.png" width="16" height="16">16</div></div></div>
+  <div class="card"><h2>6 — Curve + headphones</h2><p>Full-bleed with curve and headphones. Maximum audio.</p>
+    <img class="big" src="6_curve_headphones.png">
+    <div class="sizes"><div><img src="6_curve_headphones.png" width="64" height="64">64</div><div><img src="6_curve_headphones.png" width="32" height="32">32</div><div><img src="6_curve_headphones.png" width="16" height="16">16</div></div></div>
+  <div class="card ref"><h2>Reference — current TrontEQ</h2><p>Raw face crop, no treatment.</p>
+    <img class="big" src="../gui/assets/icon.png">
+    <div class="sizes"><div><img src="../gui/assets/icon.png" width="64" height="64">64</div><div><img src="../gui/assets/icon.png" width="32" height="32">32</div><div><img src="../gui/assets/icon.png" width="16" height="16">16</div></div></div>
+  <div class="card ref"><h2>Reference — TrontSnap</h2><p>Rainbow border sibling, for family comparison.</p>
+    <img class="big" src="../../trontsnap/docs/assets/icon.png">
+    <div class="sizes"><div><img src="../../trontsnap/docs/assets/icon.png" width="64" height="64">64</div><div><img src="../../trontsnap/docs/assets/icon.png" width="32" height="32">32</div><div><img src="../../trontsnap/docs/assets/icon.png" width="16" height="16">16</div></div></div>
+</div>
+</body>
+</html>
