@@ -104,7 +104,11 @@ pub fn caption_overlay(ctx: &egui::Context) {
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
             egui::Frame::NONE
-                .fill(ui.visuals().panel_fill)
+                // Solid theme panel color, NOT visuals().panel_fill — the
+                // gradient port made panel_fill translucent, which let toolbar
+                // content ghost through the caption buttons (the exact z-fight
+                // this overlay exists to prevent). This fill must stay opaque.
+                .fill(crate::theme::panel())
                 .corner_radius(egui::CornerRadius { sw: 6, ..Default::default() })
                 .inner_margin(egui::Margin { left: 6, right: 4, top: 3, bottom: 3 })
                 .show(ui, |ui| {

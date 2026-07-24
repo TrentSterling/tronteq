@@ -32,6 +32,11 @@ pub struct AppSettings {
     /// `theme_colors`. Empty = pre-theme settings file -> honor `dark_mode`.
     pub theme_name: String,
     pub theme_colors: Vec<String>,
+    /// Discord-style background wash across the chrome panels. Default ON.
+    /// No field-level `#[serde(default)]`: an old settings.json missing this
+    /// key must fall back to the container-level default below (true), not
+    /// bool's own default (false).
+    pub gradient: bool,
 }
 
 impl Default for AppSettings {
@@ -49,6 +54,7 @@ impl Default for AppSettings {
             show_fx: 0,
             theme_name: String::new(),
             theme_colors: Vec::new(),
+            gradient: true,
         }
     }
 }

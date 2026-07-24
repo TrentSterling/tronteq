@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.1] - 2026-07-24
+
+- Discord-style background gradient behind the chrome, derived live from the
+  palette (accent hue wash, deeper shifted corner), with a Gradient toggle in
+  SETUP. The EQ canvas and OUT meter stay solid dark - scope look is law.
+- Caption overlay fill pinned to the solid theme panel color so toolbar
+  content can't ghost through the window buttons now that panels are
+  translucent under the gradient.
+
 ## [0.10.0] - 2026-07-23
 
 THE VIZ MEGAPASS. 13 GL modes became 33, plus a stackable post-FX layer.

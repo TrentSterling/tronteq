@@ -273,6 +273,21 @@ impl Palette {
 static CURRENT: LazyLock<RwLock<Palette>> =
     LazyLock::new(|| RwLock::new(Palette::electric_cyan()));
 
+/// Discord-style background wash toggle. Default ON; persisted in
+/// settings.json like the palette itself (see `AppSettings::gradient`).
+static GRADIENT: LazyLock<RwLock<bool>> = LazyLock::new(|| RwLock::new(true));
+
+pub fn gradient_enabled() -> bool {
+    *GRADIENT.read().unwrap()
+}
+
+/// Flip the gradient toggle and re-apply egui visuals (panel translucency
+/// follows it immediately).
+pub fn set_gradient(ctx: &egui::Context, on: bool) {
+    *GRADIENT.write().unwrap() = on;
+    ctx.set_visuals(build_visuals());
+}
+
 /// Swap the live palette and re-apply egui visuals.
 pub fn set_palette(ctx: &egui::Context, p: Palette) {
     *CURRENT.write().unwrap() = p;
@@ -480,8 +495,16 @@ fn build_visuals() -> egui::Visuals {
     let hover = c32(color::mix_colors(rgb_of(p.panel2), rgb_of(p.accent), 0.14));
     let accent_dim = p.accent_dim;
 
-    v.panel_fill = p.panel;
-    v.window_fill = p.panel;
+    // Gradient ON: panel/window fills go slightly translucent so the
+    // background wash reads through the chrome. OFF: fully solid, the
+    // pre-gradient look. The EQ canvas + OUT meter paint their own opaque
+    // rects over this (canvas_bg()/meter_track()) so they stay solid dark
+    // in both cases (house rule) regardless of this alpha.
+    let panel_alpha: u8 = if gradient_enabled() { 216 } else { 255 };
+    let panel_fill =
+        Color32::from_rgba_unmultiplied(p.panel.r(), p.panel.g(), p.panel.b(), panel_alpha);
+    v.panel_fill = panel_fill;
+    v.window_fill = panel_fill;
     v.window_stroke = Stroke::new(1.0, border(40));
     v.extreme_bg_color = p.bg;
     v.faint_bg_color = p.panel2;
@@ -510,4 +533,77 @@ fn build_visuals() -> egui::Visuals {
 
     v.clip_rect_margin = 0.0;
     v
+}
+
+// ---- background gradient ---------------------------------------------------
+
+/// Discord-style dynamic background wash, derived from the live palette.
+/// TrontStack canonical recipe (same shape across every app, see
+/// SpaceView's `theme::gradient_colors` — this is a straight port):
+///   top-left = bg -> toward accent (strongest)
+///   top-right = bg -> toward accent (half as strong)
+///   bottom-left = bg -> toward a deeper/darker accent (hue +40deg, value halved)
+///   bottom-right = bg darkened
+/// Light mode blends the same way but pulls back toward white so it stays
+/// airy instead of muddy.
+///
+/// BLEND scales the baseline 14/7/8/6% mix up so the wash still reads once
+/// composited under the ~85%-opaque panel fill (`build_visuals`'s
+/// `panel_alpha`) — same tuning SpaceView landed on.
+const GRADIENT_BLEND: f32 = 8.0;
+
+pub fn gradient_colors(p: &Palette) -> [Color32; 4] {
+    let bg = rgb_of(p.bg);
+    let accent = rgb_of(p.accent);
+    let a = color::rgb_to_hsl(accent);
+
+    if p.dark {
+        let deep = color::hsl_to_rgb((a.h + 40.0).rem_euclid(360.0), a.s, (a.l * 0.5).max(6.0));
+        [
+            c32(color::mix_colors(bg, accent, (0.14 * GRADIENT_BLEND).min(0.85))), // top-left
+            c32(color::mix_colors(bg, accent, (0.07 * GRADIENT_BLEND).min(0.85))), // top-right
+            c32(color::mix_colors(bg, deep, (0.08 * GRADIENT_BLEND).min(0.85))),   // bottom-left
+            c32(color::mix_colors(bg, [0, 0, 0], (0.06 * GRADIENT_BLEND).min(0.85))), // bottom-right
+        ]
+    } else {
+        let white = [255u8, 255, 255];
+        let deep = color::hsl_to_rgb(
+            (a.h + 40.0).rem_euclid(360.0),
+            (a.s * 0.7).max(20.0),
+            (a.l * 1.25).min(85.0),
+        );
+        // Two-stage: blend toward accent/deep first (BLEND-scaled, same as
+        // dark mode), then pull most of the way back toward white so it
+        // stays airy instead of muddy.
+        let tl = color::mix_colors(color::mix_colors(bg, accent, (0.10 * GRADIENT_BLEND).min(0.7)), white, 0.45);
+        let tr = color::mix_colors(color::mix_colors(bg, accent, (0.05 * GRADIENT_BLEND).min(0.7)), white, 0.55);
+        let bl = color::mix_colors(color::mix_colors(bg, deep, (0.06 * GRADIENT_BLEND).min(0.7)), white, 0.40);
+        let br = color::mix_colors(bg, white, (0.11 * GRADIENT_BLEND).min(0.7));
+        [c32(tl), c32(tr), c32(bl), c32(br)]
+    }
+}
+
+/// Paint the gradient as one 4-vertex mesh into the background layer, before
+/// any panel draws. Cost is a single quad — negligible. No-op when the
+/// toggle is off.
+pub fn paint_gradient(ctx: &egui::Context) {
+    if !gradient_enabled() {
+        return;
+    }
+    let rect = ctx.screen_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let p = current();
+    let [tl, tr, bl, br] = gradient_colors(&p);
+
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), tl);
+    mesh.colored_vertex(rect.right_top(), tr);
+    mesh.colored_vertex(rect.left_bottom(), bl);
+    mesh.colored_vertex(rect.right_bottom(), br);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+
+    ctx.layer_painter(egui::LayerId::background()).add(egui::Shape::mesh(mesh));
 }

@@ -286,6 +286,7 @@ impl App {
                 theme::Palette::resolve(&ui_settings.theme_name, &ui_settings.theme_colors),
             );
         }
+        theme::set_gradient(ctx, ui_settings.gradient);
         ctx.set_zoom_factor(ui_settings.zoom);
         let store = profiles::ProfileStore::load();
         let active_profile = ui_settings
@@ -602,6 +603,13 @@ impl eframe::App for App {
         // meter both use it.
         let tel = self.state.telemetry();
         let t_panels = std::time::Instant::now();
+
+        // Discord-style background wash, painted into the background layer
+        // before any panel draws (no-op when the toggle is off). Panels
+        // above it go slightly translucent (`theme::build_visuals`) so it
+        // reads through the chrome; the EQ canvas + OUT meter paint their
+        // own opaque fills and stay solid dark regardless (house rule).
+        theme::paint_gradient(ctx);
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(2.0);
@@ -1031,6 +1039,7 @@ impl eframe::App for App {
             show_fx: self.show_fx,
             theme_name: pal.name,
             theme_colors: pal.source,
+            gradient: theme::gradient_enabled(),
         };
         if cur != self.settings_cache {
             cur.save();

@@ -457,6 +457,14 @@ fn setup_tab(
             ctx.set_zoom_factor((zoom + 0.1).min(2.0));
         }
     });
+    let mut gradient = theme::gradient_enabled();
+    if ui
+        .checkbox(&mut gradient, "Gradient")
+        .on_hover_text("Discord-style background wash behind the chrome")
+        .changed()
+    {
+        theme::set_gradient(ctx, gradient);
+    }
     ui.separator();
 
     ui.label(egui::RichText::new("MAINTENANCE").color(theme::cyan()).strong());
