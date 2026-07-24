@@ -716,15 +716,18 @@ impl eframe::App for App {
                         self.tab = inspector::Tab::Setup;
                     }
                 }
-                // Caption buttons on the far right; whatever gap remains between
-                // them and the last left-side control is a window drag region.
+                // The caption buttons live in a floating top-right overlay (see
+                // caption_overlay below) so a cramped toolbar can never draw
+                // through them. Here we only reserve their footprint and turn
+                // the leftover gap into a window drag region.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    window_chrome::caption_buttons(ui);
+                    ui.add_space(window_chrome::CAPTION_W);
                     let gap = ui.available_rect_before_wrap();
                     window_chrome::drag_region(ui, gap, "toolbar-drag-gap");
                 });
             });
         });
+        window_chrome::caption_overlay(ctx);
         window_chrome::edge_resize(ctx);
 
         // Meter source: prefer the APO's real pre/post-chain telemetry (true in

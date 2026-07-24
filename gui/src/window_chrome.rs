@@ -87,23 +87,45 @@ pub fn is_maximized(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.viewport().maximized).unwrap_or(false)
 }
 
-/// The full caption-button group (minimize, maximize/restore, close), laid out
-/// right-to-left so the caller drops it at the start of a `right_to_left` block
-/// and gets the conventional `─ □ ✕` order on screen.
-pub fn caption_buttons(ui: &mut egui::Ui) {
-    let ctx = ui.ctx().clone(); // Context is an Arc handle; clone to release the &ui borrow
-    let maximized = is_maximized(&ctx);
+/// Width the caption overlay occupies at the window's top-right. The toolbar
+/// reserves this much so its content stops short of the buttons at normal
+/// widths; when the window gets TOO narrow the overlay simply covers whatever
+/// slid under it (opaque background — nothing draws through).
+pub const CAPTION_W: f32 = 3.0 * 34.0 + 10.0;
 
-    if window_button(ui, WinBtn::Close).on_hover_text("Hide to tray (EQ keeps running)").clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-    let max_kind = if maximized { WinBtn::Restore } else { WinBtn::Maximize };
-    if window_button(ui, max_kind).on_hover_text("Maximize / restore").clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-    }
-    if window_button(ui, WinBtn::Minimize).on_hover_text("Minimize").clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-    }
+/// The caption buttons as a floating always-on-top overlay pinned to the
+/// window's top-right corner, with an opaque panel-colored background. Being a
+/// Foreground `Area` (not part of the toolbar row) means a cramped toolbar can
+/// never z-fight the min/max/close targets — they win, always.
+pub fn caption_overlay(ctx: &egui::Context) {
+    let maximized = is_maximized(ctx);
+    egui::Area::new(egui::Id::new("tronteq_caption_overlay"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(ui.visuals().panel_fill)
+                .corner_radius(egui::CornerRadius { sw: 6, ..Default::default() })
+                .inner_margin(egui::Margin { left: 6, right: 4, top: 3, bottom: 3 })
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.horizontal(|ui| {
+                        if window_button(ui, WinBtn::Minimize).on_hover_text("Minimize").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        let max_kind = if maximized { WinBtn::Restore } else { WinBtn::Maximize };
+                        if window_button(ui, max_kind).on_hover_text("Maximize / restore").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        if window_button(ui, WinBtn::Close)
+                            .on_hover_text("Hide to tray (EQ keeps running)")
+                            .clicked()
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+        });
 }
 
 /// Turn an already-allocated `Response` into a window move handle: drag moves the
