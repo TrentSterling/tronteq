@@ -11,10 +11,7 @@ roadmap. Trent wants: polish the hell out of it, spectrum bars + spectrogram + e
 - **GUI files:** `gui/src/main.rs` (App + panels + tray), `curve.rs` (curve + waveform render),
   `theme.rs` (cyan theme + `hsv`), `presets.rs`, `visualizer.rs` (WASAPI loopback ring),
   `devices.rs` (picker), `state_writer.rs`, `dsp_preview.rs` (RBJ mirror for the drawn curve).
-- **GUI is ELEVATED** (admin manifest via winresource in `build.rs`). Replacing the running exe
-  needs an elevated `Stop-Process`. Deploy cycle: kill elevated -> `cargo build --release -p tronteq`
-  -> `Start-Process` the exe (UAC). `cargo test -p tronteq` FAILS (manifest) -> use
-  `-p tronteq-shared -p tronteq-cli`.
+- **GUI is Medium-integrity (asInvoker)** since v0.9.0 (privilege separation: GUI at user level, tronteq-cli elevated on demand). Kill = plain `Stop-Process`. Deploy: kill -> `cargo build --release -p tronteq` -> run (no UAC for GUI, only when CLI does installs). `cargo test -p tronteq` works; `-p tronteq-shared -p tronteq-cli` also available.
 - **Visualizer already exists**: `gui/src/visualizer.rs` captures the default render endpoint via
   WASAPI loopback on a thread into a ring of decimated mono samples; GUI reads `snapshot()` and
   `curve.rs::draw_waveform` paints it. ALL new meters/spectrum/spectrogram build on this.

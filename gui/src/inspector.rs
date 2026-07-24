@@ -8,7 +8,7 @@ use eframe::egui;
 use tronteq_shared::Dynamics;
 
 use crate::vizbus::Signal;
-use crate::{curve, devices, knob, presets, profiler, profiles, show, theme, App};
+use crate::{curve, devices, glstage, knob, presets, profiler, profiles, show, theme, App};
 
 /// Which inspector tab is open. Persisted in settings.json by name.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,6 +49,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut layers = app.layers;
     let mut rainbow = app.rainbow;
     let mut show_mode = app.show.mode;
+    let mut show_shuffle = app.show_shuffle;
+    let mut show_fx = app.show_fx;
     let mut sel_device = app.selected_device;
     let mut do_apply = false;
     let mut do_refresh = false;
@@ -70,7 +72,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 match tab {
                     Tab::Chain => chain_tab(ui, &mut preamp, &mut d, &mut delay, &mut chain_changed),
-                    Tab::Viz => viz_tab(ui, &mut layers, &mut rainbow, &mut show_mode),
+                    Tab::Viz => viz_tab(
+                        ui,
+                        &mut layers,
+                        &mut rainbow,
+                        &mut show_mode,
+                        &mut show_shuffle,
+                        &mut show_fx,
+                    ),
                     Tab::Data => data_tab(ui, app),
                     Tab::Setup => setup_tab(
                         ui,
@@ -91,6 +100,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     app.layers = layers;
     app.rainbow = rainbow;
     app.show.mode = show_mode;
+    app.show_shuffle = show_shuffle;
+    app.show_fx = show_fx;
     app.selected_device = sel_device;
     if let Some(p) = theme_pick {
         theme::set_palette(ctx, p);
@@ -252,11 +263,14 @@ fn chain_tab(
 
 /// ANALYZE = the data layers stacked behind the EQ curve. SHOW = full-canvas
 /// eye-candy, one mode at a time, drawn beneath everything.
+#[allow(clippy::too_many_arguments)]
 fn viz_tab(
     ui: &mut egui::Ui,
     layers: &mut curve::Layers,
     rainbow: &mut bool,
     show_mode: &mut show::ShowMode,
+    show_shuffle: &mut bool,
+    show_fx: &mut u32,
 ) {
     ui.label(egui::RichText::new("ANALYZE").color(theme::cyan()).strong());
     ui.checkbox(&mut layers.spectrum, "Spectrum bars");
@@ -281,8 +295,49 @@ fn viz_tab(
             ui.selectable_value(show_mode, m, m.label());
         }
     });
+    ui.horizontal(|ui| {
+        ui.checkbox(show_shuffle, "Shuffle")
+            .on_hover_text("Auto-cycle through the GL modes every ~18s");
+        if ui.button("🎲 Random").on_hover_text("Jump to a random GL mode now").clicked() {
+            let gl_modes: Vec<show::ShowMode> =
+                show::ShowMode::ALL.iter().copied().filter(|m| m.gl_mode().is_some()).collect();
+            if !gl_modes.is_empty() {
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or(0);
+                *show_mode = gl_modes[seed as usize % gl_modes.len()];
+            }
+        }
+    });
     ui.label(
         egui::RichText::new("One at a time. Beat-reactive, draws under the analyzers - turn ANALYZE layers off for pure eye candy.")
+            .color(theme::muted())
+            .small(),
+    );
+    ui.separator();
+    ui.label(egui::RichText::new("FX (stackable)").color(theme::cyan()).strong());
+    ui.horizontal_wrapped(|ui| {
+        for (bit, label) in [
+            (glstage::FX_MIRROR, "Mirror"),
+            (glstage::FX_ZOOMBLUR, "Zoom blur"),
+            (glstage::FX_ABERRATION, "Aberration"),
+            (glstage::FX_PIXELATE, "Pixelate"),
+            (glstage::FX_HALFTONE, "Halftone"),
+            (glstage::FX_SCANLINES, "Scanlines"),
+            (glstage::FX_GRAIN, "Grain"),
+            (glstage::FX_STROBE, "Strobe"),
+            (glstage::FX_EDGEGLOW, "Edge glow"),
+            (glstage::FX_THERMAL, "Thermal"),
+        ] {
+            let active = (*show_fx & bit) != 0;
+            if ui.selectable_label(active, label).clicked() {
+                *show_fx ^= bit;
+            }
+        }
+    });
+    ui.label(
+        egui::RichText::new("Any combination, layered over any SHOW GL mode above.")
             .color(theme::muted())
             .small(),
     );

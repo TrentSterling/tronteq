@@ -103,3 +103,13 @@ Two adversarial re-reviewers verified passes 1-3:
 - ⏳ MED CLI: dir grant still `(OI)(CI)(RX) /T` container-wide (cert carved out, but new files inherit) — scope to `state.bin`; uninstall enum-failure prints `[ok]`; `AdjustTokenPrivileges` `ERROR_NOT_ALL_ASSIGNED` unchecked; cert password hardcoded.
 - ⏳ MED GUI perf: spectrogram re-uploads the full texture every frame; tray Quit `process::exit(0)` skips Drop (leaks the capture thread).
 - ⏳ LOW doc rot: `apo/src/EqState.h:2` + `CLAUDE.md` still say "144 bytes".
+
+---
+
+## S71 Findings — privilege separation (v0.9.0, asInvoker GUI) + DLL ACL audit
+
+**Summary:** GUI de-elevated to Medium (asInvoker) with tronteq-cli spawned elevated on demand. APO installation path locked down; DLL ACL needs carving.
+
+- ⏳ **OPEN HIGH: TrontEqApo.dll ACL** — `TrontEqApo.dll` in `C:\ProgramData\TrontEq\` inherits container ACL from installer grant (Users have Modify via the relaxed OI/CI/RX). audiodg loads the DLL; a standard user can replace/tamper it. Next install: carve the DLL like the pfx — Admins/SYSTEM full control, everyone else RX only (icacls explicit DACL).
+- ⏳ **OPEN: dev-cert.pfx re-lock pending** — v0.9.0 migration swept a Users ACE onto the cert grant. One-liner already handed to Trent; applies at next boot or manual icacls pass.
+- ⏳ **NOTE: Elevated install output round-trips via C:/ProgramData/TrontEq/install.log** — benign; tronteq-cli appends diagnostics. No secrets in file.

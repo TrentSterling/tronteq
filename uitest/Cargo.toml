@@ -3,10 +3,9 @@ name = "tronteq-uitest"
 version.workspace = true
 edition.workspace = true
 
-# Headless UI snapshot harness. Lives in its own crate because the gui crate
-# embeds a requireAdministrator manifest into every binary it builds (tests
-# included), which makes them unrunnable from a normal shell. This crate has no
-# manifest, so `cargo run -p tronteq-uitest` and its tests run anywhere.
+# Headless UI snapshot harness. Separate crate for historical organization (GUI
+# used to require admin manifest; asInvoker since v0.9.0). This crate has no manifest,
+# so `cargo run -p tronteq-uitest` and `cargo test -p tronteq-uitest` run anywhere.
 
 [[bin]]
 name = "uishot"

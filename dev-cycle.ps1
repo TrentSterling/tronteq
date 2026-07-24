@@ -1,13 +1,13 @@
 # Dev cycle: kill running GUI -> rebuild release -> relaunch -> verify. ZERO UAC.
 #
-# The trick: TrontEQ is launched by an onlogon /rl HIGHEST scheduled task
-# ("TrontEQ") that runs elevated. Driving that task from the Task Scheduler ends
-# and relaunches the elevated GUI with NO consent prompt (managing your own task
-# needs no elevation). `schtasks /run` launches the freshly-built exe elevated.
+# The trick: TrontEQ is launched by an onlogon /rl LIMITED scheduled task
+# ("TrontEQ") that runs the Medium-integrity GUI. The GUI spawns tronteq-cli elevated
+# only for APO install/uninstall. Driving the task via schtasks /end and /run manages
+# the GUI without consent prompts (managing your own task needs no elevation).
+# `schtasks /run` launches the freshly-built exe at Medium level.
 #
-# This replaced a self-elevating variant that LOOPED: its admin re-check kept
-# re-spawning UAC prompts and never ran, so every "yes" appeared to do nothing.
-# Do NOT reintroduce Start-Process -Verb RunAs here.
+# Previous design: /rl HIGHEST + self-elevating GUI looped UAC prompts (never ran).
+# Current: GUI Medium (asInvoker) + tronteq-cli elevated (on-demand). Flow unchanged.
 #
 # Results -> dev-cycle.log (append, timestamped).
 

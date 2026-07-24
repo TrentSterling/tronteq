@@ -22,6 +22,12 @@ pub struct AppSettings {
     pub active_profile: Option<String>,
     pub inspector_tab: String,
     pub show_mode: String,
+    /// Auto-cycle through the GL SHOW modes every ~18s while one is active.
+    #[serde(default)]
+    pub show_shuffle: bool,
+    /// Stackable post-fx bitmask (see `glstage::FX_*`). 0 = off.
+    #[serde(default)]
+    pub show_fx: u32,
     /// Theme name; built-ins resolve by name, derived themes rebuild from
     /// `theme_colors`. Empty = pre-theme settings file -> honor `dark_mode`.
     pub theme_name: String,
@@ -39,6 +45,8 @@ impl Default for AppSettings {
             active_profile: None,
             inspector_tab: "chain".into(),
             show_mode: "off".into(),
+            show_shuffle: false,
+            show_fx: 0,
             theme_name: String::new(),
             theme_colors: Vec::new(),
         }

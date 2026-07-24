@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.10.0] - 2026-07-23
+
+THE VIZ MEGAPASS. 13 GL modes became 33, plus a stackable post-FX layer.
+
+- **20 new shader modes** (winamp/milkdrop/shadertoy energy): Matrix rain, Scope
+  ring, Sky (the VR SimpleClouds port — clouds thicken on bass, sun flares on
+  beats), Aurora, Outrun, Spectrum city, Wormhole, Spirograph, Laser show,
+  Disco ball, Hex pulse, Lightning, DNA helix, Bubbles, Copper bars, LED wall,
+  Sonar, Pulsar, Black hole, Moonlit ocean. Every one beat-reactive, every one
+  AI-vision-verified live before shipping.
+- **3 reworks:** Starfield is a real layered warp field now (hundreds of stars,
+  hyperspace lurch on kicks), Flame got fierce (licking tongues, embers on
+  beats), Julia breathes through a slow deep-zoom cycle with smooth (banding-
+  free) iteration coloring.
+- **Post-FX overlay stack** — mix-and-match bits over ANY shader mode, feedback
+  loop stays clean: Mirror, Zoom blur, Chromatic aberration, Pixelate,
+  Halftone, CRT scanlines, Film grain + vignette, Strobe-on-downbeat, Edge
+  glow, Thermal. Toggle chips live in VIZ > FX.
+- **Every VizBus signal now reaches the shaders:** BPM + confidence, spectral
+  flux, momentary loudness, crest, stereo correlation (gonio) + width join
+  bass/mid/treble/pulse/beat-phase/centroid as uniforms for all 33 modes.
+- **Shuffle** toggle auto-advances through GL modes every ~18s, plus a Random
+  button. VIZ-IDEAS.md added: the 150-idea master palette, tracked.
+- Custom window chrome: the toolbar is the title bar now (frameless window,
+  painter-drawn min/max/close, drag anywhere on the empty strip, edge resize).
+  Same treatment as TrontSnap/Boxel.
+
 ## [0.9.0] - 2026-07-23
 
 - **The GUI is no longer elevated.** Manifest went requireAdministrator ->

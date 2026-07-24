@@ -22,5 +22,6 @@ serde_json = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [build-dependencies]
-# Embeds the requireAdministrator manifest + the .exe icon (Trent's face).
+# Embeds the asInvoker manifest (Medium integrity) + the .exe icon (Trent's face).
+# APO install/device work delegated to tronteq-cli elevated on demand (privilege separation).
 winresource = "0.1"

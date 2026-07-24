@@ -26,12 +26,12 @@ Three artifacts. One IPC file.
 |---|---|
 | `apo/` | C++ COM DLL (`TrontEqApo.dll`). Subclasses `CBaseAudioProcessingObject`. RBJ biquads, DF-II-T, FTZ/DAZ. Reads `EqState` from file-backed mmap. |
 | `cli/` | Rust installer. `check` / `list-devices` / `install --device` / `uninstall`. Uses `windows` crate for `IMMDeviceEnumerator` + `IPropertyStore`. |
-| `gui/` | Rust eframe app (glow renderer). Draggable 8-band curve + viz layers (`curve.rs`), tabbed inspector CHAIN/VIZ/SETUP (`inspector.rs`), saved sound profiles (`profiles.rs`, JSON in `C:\ProgramData\TrontEq\profiles\`), persisted UI settings (`settings.rs`, settings.json), knobs/theme/spectrogram/visualizer/devices/tray modules. Writes the state file. |
-| `shared/` | Rust crate. `#[repr(C)] EqState` — the IPC contract. **216 bytes** (192 seqlock state + 24 APO-written telemetry). Serde on `Band`/`Dynamics` for profile JSON. Mirrored in `apo/src/EqState.h`. |
+| `gui/` | Rust eframe app (glow renderer). Draggable 8-band curve + viz layers (`curve.rs`), tabbed inspector CHAIN/VIZ/SETUP (`inspector.rs`), saved sound profiles (`profiles.rs`, JSON in `C:\ProgramData\TrontEq\profiles\`), persisted UI settings (`settings.rs`, settings.json), knobs/theme/spectrogram/visualizer/devices/tray modules. Writes the state file. Runs Medium (asInvoker) since v0.9.0; spawns tronteq-cli elevated for installs. |
+| `shared/` | Rust crate. `#[repr(C)] EqState` — the IPC contract. **224 bytes** (200 seqlock state + 24 APO-written telemetry). Serde on `Band`/`Dynamics` for profile JSON. Mirrored in `apo/src/EqState.h`. |
 
 ## IPC Contract
 
-File: `C:\ProgramData\TrontEq\state.bin` (216 bytes, file-backed memory map).
+File: `C:\ProgramData\TrontEq\state.bin` (224 bytes, file-backed memory map).
 
 ```
 EqState {
@@ -41,7 +41,9 @@ EqState {
   bypass:    u8            // offset 140
   _pad:      [u8; 3]       // offset 141..=143
   dynamics:  Dynamics      // offset 144, 48 bytes (comp/limiter/AGC params)
-  telemetry: Telemetry     // offset 192, 24 bytes — APO WRITES, GUI reads
+  delay_ms:  f32           // offset 192, 4 bytes (A/V-sync delay, GUI-written)
+  _reserved: [u8; 4]       // offset 196, 4 bytes (alignment + headroom)
+  telemetry: Telemetry     // offset 200, 24 bytes — APO WRITES, GUI reads
 }                          //   (seq, in/out peak+rms, gr_db; not seqlocked)
 
 Band {
