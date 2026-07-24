@@ -37,6 +37,31 @@ pub struct AppSettings {
     /// key must fall back to the container-level default below (true), not
     /// bool's own default (false).
     pub gradient: bool,
+    /// Gradient v2 knobs (Discord parity): direction dial, color intensity,
+    /// number of pegs (1..=4), harmony rule index, preset index
+    /// (-1=harmony -2=custom else index into `theme::GRADIENT_PRESETS`).
+    /// None of these get a field-level `#[serde(default)]` either, for the
+    /// same reason as `gradient` above: their sensible defaults (0.45
+    /// intensity, -1 preset, 0.85/0.59 frost, true sync) are NOT the same as
+    /// the field type's own `Default::default()` (0.0/0/false), so a
+    /// field-level attribute would silently zero them out for anyone
+    /// upgrading from a settings.json that predates this feature. The
+    /// container-level `#[serde(default)]` above already does the right
+    /// thing (missing keys fall back to `AppSettings::default()` below).
+    pub gradient_angle: f32,
+    pub gradient_intensity: f32,
+    pub gradient_pegs: u8,
+    pub gradient_harmony: u8,
+    pub gradient_preset: i16,
+    /// Custom-mode pegs as comma-joined hex ("" = defaults).
+    pub gradient_custom: String,
+    /// Frost = panel opacity over the wash, per mode (0..1).
+    pub frost_dark: f32,
+    pub frost_light: f32,
+    /// Picking a gradient preset also rethemes the app (accent from its most
+    /// saturated stop). Off = the preset only drives the wash, independent
+    /// of the chrome accent.
+    pub gradient_preset_sync: bool,
 }
 
 impl Default for AppSettings {
@@ -55,6 +80,19 @@ impl Default for AppSettings {
             theme_name: String::new(),
             theme_colors: Vec::new(),
             gradient: true,
+            // Mirrors `theme::GradientCfg::default()` + the frost/sync
+            // defaults in `theme.rs` — kept as separate literals (not a
+            // cross-module call) so this file has no compile-time dependency
+            // on the theme module's internals, same as the rest of this struct.
+            gradient_angle: 135.0,
+            gradient_intensity: 0.45,
+            gradient_pegs: 3,
+            gradient_harmony: 0,
+            gradient_preset: -1,
+            gradient_custom: String::new(),
+            frost_dark: 0.85,
+            frost_light: 0.59,
+            gradient_preset_sync: true,
         }
     }
 }

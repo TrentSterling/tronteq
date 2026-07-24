@@ -19,6 +19,7 @@ mod show;
 mod spectrogram;
 mod state_writer;
 mod theme;
+mod theme_window;
 mod visualizer;
 mod vizbus;
 mod win;
@@ -182,6 +183,13 @@ struct App {
     name_buf: String,
     modal_focus: bool,
     settings_cache: settings::AppSettings,
+    /// The Theme window (gradient v2 controls): opened from the toolbar's
+    /// accent swatch. Not persisted - always starts closed, same as `show_about`.
+    show_theme_window: bool,
+    /// Picking a gradient preset also rethemes the app (accent = the
+    /// preset's most-saturated stop). Persisted; the `GradientCfg` itself
+    /// lives in `theme.rs`'s own static, not here.
+    gradient_preset_sync: bool,
     tab: inspector::Tab,
     show: show::ShowState,
     /// Auto-cycle through the GL SHOW modes while one is active.
@@ -283,10 +291,32 @@ impl App {
         } else {
             theme::set_palette(
                 ctx,
-                theme::Palette::resolve(&ui_settings.theme_name, &ui_settings.theme_colors),
+                theme::Palette::resolve(
+                    &ui_settings.theme_name,
+                    &ui_settings.theme_colors,
+                    ui_settings.dark_mode,
+                ),
             );
         }
         theme::set_gradient(ctx, ui_settings.gradient);
+        // Gradient v2 knobs + frost, loaded before the first frame same as
+        // the palette above (no default-look flash on startup).
+        let mut grad_cfg = theme::GradientCfg {
+            angle_deg: ui_settings.gradient_angle,
+            intensity: ui_settings.gradient_intensity.clamp(0.0, 1.0),
+            pegs: ui_settings.gradient_pegs.clamp(1, 4),
+            harmony: ui_settings.gradient_harmony,
+            preset: ui_settings.gradient_preset,
+            ..Default::default()
+        };
+        for (i, hex) in ui_settings.gradient_custom.split(',').take(4).enumerate() {
+            if let Some(rgb) = color::hex_to_rgb(hex) {
+                grad_cfg.custom[i] = rgb;
+            }
+        }
+        theme::set_gradient_cfg(grad_cfg);
+        theme::set_frost(true, ui_settings.frost_dark);
+        theme::set_frost(false, ui_settings.frost_light);
         ctx.set_zoom_factor(ui_settings.zoom);
         let store = profiles::ProfileStore::load();
         let active_profile = ui_settings
@@ -445,6 +475,8 @@ impl App {
             profiler: profiler::Profiler::default(),
             vizbus: vizbus::VizBus::new(),
             gl_stage,
+            show_theme_window: false,
+            gradient_preset_sync: ui_settings.gradient_preset_sync,
             settings_cache: ui_settings,
         };
         me.commit();
@@ -709,6 +741,22 @@ impl eframe::App for App {
                 if ui.checkbox(&mut bypass, "Bypass").changed() {
                     self.bypass = bypass;
                     self.commit();
+                }
+                // Theme window trigger: a small accent-colored swatch (click
+                // to open the full gradient v2 control panel — colors,
+                // dark/light, wash). Sits right before the quick Light/Dark
+                // flip, which stays as its own one-click shortcut.
+                let (srect, sresp) =
+                    ui.allocate_exact_size(egui::vec2(26.0, 18.0), egui::Sense::click());
+                ui.painter().rect_filled(srect, 4.0, theme::cyan());
+                let ring = if sresp.hovered() || self.show_theme_window {
+                    egui::Stroke::new(1.5, theme::text())
+                } else {
+                    egui::Stroke::new(1.0, theme::muted())
+                };
+                ui.painter().rect_stroke(srect, 4.0, ring, egui::StrokeKind::Middle);
+                if sresp.on_hover_text("Theme: colors, dark/light, gradient").clicked() {
+                    self.show_theme_window = !self.show_theme_window;
                 }
                 if ui
                     .button(if theme::dark_mode() { "Light" } else { "Dark" })
@@ -1034,6 +1082,7 @@ impl eframe::App for App {
         }
 
         about::show(ctx, &mut self.show_about, &mut self.about_icon);
+        theme_window::show(self, ctx);
 
         // Persist UI settings on change. There is no clean shutdown hook (tray
         // Quit is process::exit), so save-on-change is the only reliable path.
@@ -1052,8 +1101,28 @@ impl eframe::App for App {
             theme_name: pal.name,
             theme_colors: pal.source,
             gradient: theme::gradient_enabled(),
+            gradient_angle: theme::gradient_cfg().angle_deg,
+            gradient_intensity: theme::gradient_cfg().intensity,
+            gradient_pegs: theme::gradient_cfg().pegs,
+            gradient_harmony: theme::gradient_cfg().harmony,
+            gradient_preset: theme::gradient_cfg().preset,
+            gradient_custom: theme::gradient_cfg()
+                .custom
+                .iter()
+                .map(|rgb| color::rgb_to_hex(*rgb))
+                .collect::<Vec<_>>()
+                .join(","),
+            frost_dark: theme::frost(true),
+            frost_light: theme::frost(false),
+            gradient_preset_sync: self.gradient_preset_sync,
         };
-        if cur != self.settings_cache {
+        // Only hit the disk once a drag ends: the Theme window's
+        // Direction/Intensity/Frost sliders change `cur` every single frame
+        // mid-drag (Slider fires `changed()` continuously), and without this
+        // gate that means a save (temp-write + rename) per frame for as long
+        // as the mouse button is held - avoidable SSD churn a plain "did the
+        // value change" diff doesn't catch (SpaceView precedent).
+        if cur != self.settings_cache && !ctx.input(|i| i.pointer.primary_down()) {
             cur.save();
             self.settings_cache = cur;
         }

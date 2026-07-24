@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.11.0] - 2026-07-24
+
+Gradient v2 (SpaceView port): the flat 4-corner wash becomes a real
+Discord-style multi-stop ramp, with a full Theme window to drive it.
+
+- **Multi-stop ramp:** 1-4 color pegs (not 4 fixed corners), any angle
+  (Direction dial), 0-100% Color Intensity, and end-hold easing so the
+  outer ~12% of the ramp sits at the pure first/last peg instead of a fade.
+  Painted as a 16x16 vertex grid so an arbitrary angle stays crisp.
+- **Three peg sources:** Harmony (1-4 pegs derived from the live accent via
+  colormagic's harmony rules), 27 curated named Presets (Galaxy Punch,
+  Vaporwave, Chrome Sunset, Aurora Sky, and 23 more; cycle with `<`/`>` or
+  the dropdown), or Custom (pick up to 4 colors yourself; slot 1 is always
+  the live accent, linked).
+- **Theme window:** opened from a new accent swatch next to the Light/Dark
+  toolbar toggle. Big inline color picker, Dark/Light chips, a full premade
+  combo (all 32 palettes) + Random, the gradient controls above, a
+  raw-wash/frosted split preview strip, Magic (roll a colormagic flavor into
+  custom pegs), and Reset (the wayback machine: known-good ramp + frost).
+- **Frost knob:** panel opacity over the wash is now a slider (0-100%, per
+  mode) instead of the old fixed 216-alpha constant. Dark defaults to 85%
+  (matches the old look pixel-for-pixel), light gets its own 59% default
+  since white bleaches color faster than dark preserves it. The EQ canvas
+  and OUT meter are untouched by this knob and stay solid dark in both
+  modes, same as v1.
+- `Palette::from_accent` + `Palette::resolve`'s new `dark` parameter: a
+  single picked accent can now be retargeted at dark or light without
+  losing the pick, independent of the multi-color `from_colors` path.
+
 ## [0.10.1] - 2026-07-24
 
 - Discord-style background gradient behind the chrome, derived live from the

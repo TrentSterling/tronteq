@@ -1,0 +1,344 @@
+//! The Theme window: gradient v2 controls, ported from SpaceView's
+//! `Window::new("Theme")` (colormagic accent picker, dark/light + premades +
+//! randomize, the Discord-style multi-stop wash, and the reset "wayback
+//! machine"). Opened from the toolbar's accent swatch, next to the Light/Dark
+//! toggle (see `main.rs`).
+//!
+//! Follows the established "copy locals, mutate inside the closure, write
+//! back after it closes" pattern (`inspector.rs`) so nothing from `App` is
+//! captured inside the nested egui closure — `ctx` is a cheap `Copy` handle,
+//! and the palette/gradient-cfg/frost knobs all live in `theme.rs`'s own
+//! statics, so the only two bits of `App` state this window needs
+//! (`show_theme_window`, `gradient_preset_sync`) are plain bools.
+
+use eframe::egui;
+
+use crate::color;
+use crate::{theme, App};
+
+pub fn show(app: &mut App, ctx: &egui::Context) {
+    let mut show_win = app.show_theme_window;
+    if !show_win {
+        return;
+    }
+    // Modal law: Esc closes, same as the window's own X.
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        show_win = false;
+    }
+    let mut sync = app.gradient_preset_sync;
+
+    if show_win {
+        let mut open = true;
+        egui::Window::new("Theme")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                // ---- THE picker, big and up front: one swatch exists (the
+                // toolbar block); in here the full picker IS the interface.
+                let acc = theme::cyan();
+                let mut accent_color = acc;
+                if egui::color_picker::color_picker_color32(
+                    ui,
+                    &mut accent_color,
+                    egui::color_picker::Alpha::Opaque,
+                ) {
+                    let rgb = [accent_color.r(), accent_color.g(), accent_color.b()];
+                    let dark = theme::dark_mode();
+                    theme::set_palette(ctx, theme::Palette::from_accent(rgb, dark));
+                }
+                ui.separator();
+
+                // ---- Dark|Light chips + premades combo + Random, one row --
+                ui.horizontal(|ui| {
+                    let dark = theme::dark_mode();
+                    if ui.selectable_label(dark, "Dark").clicked() && !dark {
+                        theme::set_mode(ctx, true);
+                    }
+                    if ui.selectable_label(!dark, "Light").clicked() && dark {
+                        theme::set_mode(ctx, false);
+                    }
+                    ui.separator();
+                    let cur_name = theme::current().name;
+                    egui::ComboBox::from_id_salt("theme_premade_selector")
+                        .selected_text(if cur_name.is_empty() { "Theme" } else { cur_name.as_str() })
+                        .width(130.0)
+                        .show_ui(ui, |ui| {
+                            for name in ["Electric Cyan", "Paper", "Synthwave"] {
+                                if ui.selectable_label(cur_name == name, name).clicked() {
+                                    let p = match name {
+                                        "Electric Cyan" => theme::Palette::electric_cyan(),
+                                        "Paper" => theme::Palette::paper(),
+                                        _ => theme::Palette::synthwave(),
+                                    };
+                                    theme::set_palette(ctx, p);
+                                }
+                            }
+                            for pp in color::PREMADE_PALETTES {
+                                if ui.selectable_label(cur_name == pp.name, pp.name).clicked() {
+                                    if let Some(pal) = theme::Palette::premade(pp.name) {
+                                        theme::set_palette(ctx, pal);
+                                    }
+                                }
+                            }
+                        });
+                    if ui.button("Random").on_hover_text("Roll a theme").clicked() {
+                        theme::set_palette(ctx, theme::Palette::randomize());
+                    }
+                });
+                ui.separator();
+
+                // ---- Gradient -----------------------------------------------
+                let mut gradient = theme::gradient_enabled();
+                if ui
+                    .checkbox(&mut gradient, "Gradient")
+                    .on_hover_text("Discord-style background wash behind the chrome")
+                    .changed()
+                {
+                    theme::set_gradient(ctx, gradient);
+                }
+                if !gradient {
+                    return;
+                }
+                let mut cfg = theme::gradient_cfg();
+                let mut dirty = false;
+
+                // Live preview: TOP band = the raw wash, BOTTOM band = the
+                // wash as perceived through the current frost — preview ==
+                // background by construction (the smart-slot invariant).
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 26.0),
+                    egui::Sense::hover(),
+                );
+                const SLICES: usize = 48;
+                let mid_y = rect.top() + rect.height() * 0.5;
+                for i in 0..SLICES {
+                    let t0 = i as f32 / SLICES as f32;
+                    let t1 = (i + 1) as f32 / SLICES as f32;
+                    let tm = (t0 + t1) * 0.5;
+                    let x0 = rect.left() + rect.width() * t0;
+                    let x1 = rect.left() + rect.width() * t1;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, mid_y)),
+                        0.0,
+                        theme::ramp_sample(tm),
+                    );
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(egui::pos2(x0, mid_y), egui::pos2(x1, rect.bottom())),
+                        0.0,
+                        theme::ramp_sample_frosted(tm),
+                    );
+                }
+                ui.painter().rect_stroke(
+                    rect,
+                    2.0,
+                    egui::Stroke::new(1.0, theme::muted()),
+                    egui::StrokeKind::Middle,
+                );
+                ui.add_space(6.0);
+
+                ui.label("Direction");
+                dirty |= ui
+                    .add(egui::Slider::new(&mut cfg.angle_deg, 0.0..=360.0).suffix(" deg"))
+                    .changed();
+                ui.label("Intensity");
+                dirty |= ui
+                    .add(
+                        egui::Slider::new(&mut cfg.intensity, 0.0..=1.0)
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    )
+                    .changed();
+                // FROST: panel opacity over the wash. 0% = panels vanish,
+                // background IS the preview ramp (WYSIWYG); high = solid chrome.
+                ui.label("Frost");
+                let dark = theme::dark_mode();
+                let mut frost = theme::frost(dark);
+                if ui
+                    .add(
+                        egui::Slider::new(&mut frost, 0.0..=1.0)
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    )
+                    .changed()
+                {
+                    theme::set_frost(dark, frost);
+                    dirty = true;
+                }
+                ui.separator();
+
+                // Source mode chips: harmony / preset shelf / custom.
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(cfg.preset == -1, "Harmony").clicked() {
+                        cfg.preset = -1;
+                        dirty = true;
+                    }
+                    if ui.selectable_label(cfg.preset >= 0, "Presets").clicked() {
+                        if cfg.preset < 0 {
+                            cfg.preset = 0;
+                        }
+                        dirty = true;
+                    }
+                    if ui.selectable_label(cfg.preset == -2, "Custom").clicked() {
+                        cfg.preset = -2;
+                        dirty = true;
+                    }
+                });
+
+                if cfg.preset == -1 {
+                    ui.horizontal(|ui| {
+                        ui.label("Pegs");
+                        for n in 1..=4u8 {
+                            if ui.selectable_label(cfg.pegs == n, format!("{n}")).clicked() {
+                                cfg.pegs = n;
+                                dirty = true;
+                            }
+                        }
+                    });
+                    let rule_name =
+                        color::HARMONY_RULES[(cfg.harmony as usize) % color::HARMONY_RULES.len()];
+                    egui::ComboBox::from_id_salt("gradient_harmony")
+                        .selected_text(rule_name)
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            for (i, rule) in color::HARMONY_RULES.iter().enumerate() {
+                                if ui.selectable_label(cfg.harmony == i as u8, *rule).clicked() {
+                                    cfg.harmony = i as u8;
+                                    dirty = true;
+                                }
+                            }
+                        });
+                } else if cfg.preset >= 0 {
+                    let preset_before = cfg.preset;
+                    let n_presets = theme::GRADIENT_PRESETS.len() as i16;
+                    ui.horizontal(|ui| {
+                        // Prev/next flank the dropdown so you can ride
+                        // through the shelf without opening it. ASCII
+                        // arrows: Rajdhani has no glyph for U+2190/U+2192.
+                        if ui.button("<").clicked() {
+                            cfg.preset = (cfg.preset - 1).rem_euclid(n_presets);
+                            dirty = true;
+                        }
+                        let preset_label = theme::GRADIENT_PRESETS
+                            .get(cfg.preset as usize)
+                            .map(|(n, _)| *n)
+                            .unwrap_or("Preset");
+                        egui::ComboBox::from_id_salt("gradient_preset")
+                            .selected_text(preset_label)
+                            .width(160.0)
+                            .show_ui(ui, |ui| {
+                                for (i, (name, _)) in theme::GRADIENT_PRESETS.iter().enumerate() {
+                                    if ui.selectable_label(cfg.preset == i as i16, *name).clicked() {
+                                        cfg.preset = i as i16;
+                                        dirty = true;
+                                    }
+                                }
+                            });
+                        if ui.button(">").clicked() {
+                            cfg.preset = (cfg.preset + 1).rem_euclid(n_presets);
+                            dirty = true;
+                        }
+                    });
+                    ui.checkbox(&mut sync, "Preset sets theme colors").on_hover_text(
+                        "On: picking a preset rethemes the whole app (coherent). Off: preset only drives the wash over your accent's ground.",
+                    );
+                    // A preset SETS the primary color too when sync is on
+                    // (accent = the preset's most-saturated stop) - otherwise
+                    // a bold preset can fight an unrelated accent ground.
+                    if sync && dirty && cfg.preset != preset_before {
+                        if let Some((pname, stops)) = theme::GRADIENT_PRESETS.get(cfg.preset as usize) {
+                            let rgbs: Vec<color::Rgb> =
+                                stops.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+                            if let Some(acc) = theme::most_saturated(&rgbs) {
+                                let mut p = theme::Palette::from_accent(acc, theme::dark_mode());
+                                p.name = (*pname).to_string();
+                                theme::set_palette(ctx, p);
+                            }
+                        }
+                    }
+                    // Height parity with the two-row modes so the window
+                    // doesn't jump when switching sources.
+                    ui.add_space(26.0);
+                } else {
+                    // Custom: your colors, your rules.
+                    ui.horizontal(|ui| {
+                        ui.label("Pegs");
+                        for n in 1..=4u8 {
+                            if ui.selectable_label(cfg.pegs == n, format!("{n}")).clicked() {
+                                cfg.pegs = n;
+                                dirty = true;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        // SLOT 0 IS THE ACCENT (linked): editing it rethemes
+                        // the app; it always participates in the ramp.
+                        // Slots 1..N are free pegs.
+                        let acc = theme::cyan();
+                        let mut rgb = [acc.r(), acc.g(), acc.b()];
+                        if ui
+                            .color_edit_button_srgb(&mut rgb)
+                            .on_hover_text("Slot 1 = your theme accent (linked)")
+                            .changed()
+                        {
+                            let dark = theme::dark_mode();
+                            theme::set_palette(ctx, theme::Palette::from_accent(rgb, dark));
+                            dirty = true;
+                        }
+                        // srgb (no alpha) pickers: same picker, smaller and
+                        // simpler - and physically incapable of showing a
+                        // dead Blending/Additive row.
+                        for i in 1..(cfg.pegs.clamp(1, 4) as usize) {
+                            if ui.color_edit_button_srgb(&mut cfg.custom[i]).changed() {
+                                dirty = true;
+                            }
+                        }
+                    });
+                }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Magic")
+                        .on_hover_text("Roll a colormagic flavor palette into custom pegs")
+                        .clicked()
+                    {
+                        let mut rng = color::Rng::from_clock();
+                        let kind = color::PaletteKind::ALL[rng.range(0, 5) as usize];
+                        let cols = color::generate_random_palette(kind, 4, &mut rng);
+                        for (i, h) in cols.iter().take(4).enumerate() {
+                            cfg.custom[i] = color::hsl_to_rgb(h.h, h.s, h.l);
+                        }
+                        cfg.preset = -2;
+                        cfg.pegs = if rng.range(0, 1) == 0 { 3 } else { 4 };
+                        cfg.angle_deg = rng.range(0, 359) as f32;
+                        dirty = true;
+                    }
+                    if ui
+                        .button("Reset")
+                        .on_hover_text(
+                            "The wayback machine: restores the known-good look (intensity 45%, frost 85%/59%, harmony pegs)",
+                        )
+                        .clicked()
+                    {
+                        cfg = theme::GradientCfg::default();
+                        // Reset MUST restore frost too, or it's a trap: the
+                        // ramp resets but frost stays wherever it was, so the
+                        // sweet spot the defaults describe is unreachable.
+                        theme::set_frost(true, 0.85);
+                        theme::set_frost(false, 0.59);
+                        dirty = true;
+                    }
+                });
+
+                if dirty {
+                    theme::set_gradient_cfg(cfg);
+                }
+            });
+        if !open {
+            show_win = false;
+        }
+    }
+
+    app.show_theme_window = show_win;
+    app.gradient_preset_sync = sync;
+}
