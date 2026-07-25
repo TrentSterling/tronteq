@@ -64,6 +64,37 @@ pub struct Palette {
     pub rainbow_v: f32,
 }
 
+impl Palette {
+    /// THE READABILITY GUARANTEE. Every palette that reaches the screen passes
+    /// through here, whatever built it: a hand-written built-in, a premade, a
+    /// derived accent, or Random.
+    ///
+    /// Why it is needed: `muted` was a blind `mix_colors(text, surface, 0.45)`
+    /// with no contrast check, and it paints every small caption in the app
+    /// (`widgets.noninteractive.fg_stroke`) - the knob labels, the section
+    /// blurbs, the hints. On a light or low-contrast ground that mix washed out
+    /// to nearly invisible grey. Now both text roles are walked (hue preserved)
+    /// until APCA says they clear their floor against the panel they sit on,
+    /// with pure black/white as the unconditional backstop.
+    ///
+    /// `panel2` is checked too because knob captions sit on the inset surface,
+    /// which is a different colour from `panel`.
+    pub fn enforce_readability(mut self) -> Self {
+        let panel = rgb_of(self.panel);
+        let panel2 = rgb_of(self.panel2);
+
+        let mut text = color::readable_against(rgb_of(self.text), panel, color::LC_TEXT_MIN);
+        text = color::readable_against(text, panel2, color::LC_TEXT_MIN);
+        self.text = c32(text);
+
+        let mut muted = color::readable_against(rgb_of(self.muted), panel, color::LC_MUTED);
+        muted = color::readable_against(muted, panel2, color::LC_MUTED);
+        self.muted = c32(muted);
+
+        self
+    }
+}
+
 fn c32(rgb: Rgb) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])
 }
@@ -360,7 +391,9 @@ pub fn most_saturated(colors: &[Rgb]) -> Option<Rgb> {
 }
 
 static CURRENT: LazyLock<RwLock<Palette>> =
-    LazyLock::new(|| RwLock::new(Palette::electric_cyan()));
+    // Enforced here too so even the pre-startup default obeys the guarantee -
+    // `set_palette` is the only other way in.
+    LazyLock::new(|| RwLock::new(Palette::electric_cyan().enforce_readability()));
 
 /// Discord-style background wash toggle. Default ON; persisted in
 /// settings.json like the palette itself (see `AppSettings::gradient`).
@@ -379,7 +412,7 @@ pub fn set_gradient(ctx: &egui::Context, on: bool) {
 
 /// Swap the live palette and re-apply egui visuals.
 pub fn set_palette(ctx: &egui::Context, p: Palette) {
-    *CURRENT.write().unwrap() = p;
+    *CURRENT.write().unwrap() = p.enforce_readability();
     ctx.set_visuals(build_visuals());
 }
 
@@ -420,11 +453,44 @@ pub fn text() -> Color32 {
 pub fn muted() -> Color32 {
     CURRENT.read().unwrap().muted
 }
+/// The accent AS DRAWN ON THE PANEL: section headers ("SIGNAL CHAIN", "A/V
+/// SYNC"), knob arcs, and every other accent-coloured mark sitting on chrome.
+///
+/// Guaranteed legible. The raw `accent` is a fill colour first - it stays
+/// verbatim for selection/active backgrounds (see `build_visuals`, which reads
+/// `p.accent` directly) - but the same value used as INK on a light or
+/// low-contrast panel washes out to nearly nothing, which is what made the
+/// amber and teal section headers disappear on pale themes.
+///
+/// Cheap: `readable_against` returns immediately when the pair already passes,
+/// so the walk only runs for palettes that actually need rescuing.
 pub fn cyan() -> Color32 {
-    CURRENT.read().unwrap().accent
+    let p = CURRENT.read().unwrap();
+    c32(color::readable_against(
+        rgb_of(p.accent),
+        rgb_of(p.panel2),
+        color::LC_MUTED,
+    ))
 }
+/// Make ANY colour safe to draw as ink on the current chrome.
+///
+/// The escape hatch for semantic colours that must keep their meaning: the
+/// amber A/V-SYNC accent stays amber and the limiter red stays red, but each is
+/// walked (hue preserved) until APCA says it clears the caption floor against
+/// the panel. Hardcoded literals like those are precisely what survived every
+/// theme change and then vanished on a pale ground.
+pub fn readable_ink(c: Color32) -> Color32 {
+    let panel2 = rgb_of(CURRENT.read().unwrap().panel2);
+    c32(color::readable_against([c.r(), c.g(), c.b()], panel2, color::LC_MUTED))
+}
+
 pub fn ok() -> Color32 {
-    CURRENT.read().unwrap().ok
+    let p = CURRENT.read().unwrap();
+    c32(color::readable_against(
+        rgb_of(p.ok),
+        rgb_of(p.panel2),
+        color::LC_MUTED,
+    ))
 }
 
 fn border(a: u8) -> Color32 {

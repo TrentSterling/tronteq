@@ -134,10 +134,13 @@ fn chain_tab(
     delay: &mut f32,
     changed: &mut bool,
 ) {
+    // Semantic accents keep their MEANING (limiter red, A/V-sync amber) but get
+    // walked to a readable lightness for the current chrome - hardcoded literals
+    // are what washed out to nothing on pale themes.
     let comp_acc = theme::cyan();
-    let lim_acc = egui::Color32::from_rgb(255, 120, 120);
+    let lim_acc = theme::readable_ink(egui::Color32::from_rgb(255, 120, 120));
     let agc_acc = theme::ok();
-    let sync_acc = egui::Color32::from_rgb(255, 190, 90);
+    let sync_acc = theme::readable_ink(egui::Color32::from_rgb(255, 190, 90));
 
     ui.label(egui::RichText::new("A/V SYNC").color(sync_acc).strong());
     ui.horizontal_wrapped(|ui| {
