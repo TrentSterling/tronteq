@@ -1,4 +1,6 @@
-﻿## [0.11.1] - 2026-07-25
+# Changelog
+
+## [0.11.1] - 2026-07-25
 
 Gradient v2 was half-reachable. Three real bugs, all found by capturing the
 window and reading pixels rather than trusting that the port looked right.
@@ -24,7 +26,6 @@ window and reading pixels rather than trusting that the port looked right.
   all produce BOMs. `load()` now trims it.
 - `TRONTEQ_THEME_WINDOW=1` opens the Theme window at startup - a no-injection
   hook for screenshot-verifying this panel.
-# Changelog
 
 ## [0.11.0] - 2026-07-24
 
