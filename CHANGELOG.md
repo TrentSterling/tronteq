@@ -1,3 +1,29 @@
+﻿## [0.11.1] - 2026-07-25
+
+Gradient v2 was half-reachable. Three real bugs, all found by capturing the
+window and reading pixels rather than trusting that the port looked right.
+
+- **Frost did nothing.** `set_frost` stored the value and stopped there, while
+  every sibling setter (`set_palette` / `set_mode` / `set_gradient`)
+  re-applies egui Visuals. Frost lives in `build_visuals`' panel alpha, so it
+  was read correctly and simply never reached the screen. New
+  `theme::refresh_visuals` is called on change and on Reset.
+- **Frost, the Harmony/Presets/Custom chips, the peg count and every peg
+  picker were unreachable.** The panel was ported from SpaceView, whose window
+  is 800px tall; TrontEQ's is 460. The content needed ~750px and simply ran off
+  the bottom. Fixed by making it fit AND scroll: the big color picker moved into
+  a collapsed "Accent color" header, slider labels sit inline with their
+  sliders, this panel uses compact row metrics, and the scrollbar is now
+  non-floating and accent-colored so it is actually visible - egui's default
+  floating bar fades out, which is why `ScrollBarVisibility::AlwaysVisible`
+  appeared to do nothing.
+- **A UTF-8 BOM in settings.json silently wiped every setting.** serde_json
+  rejects a BOM with "expected value at line 1 column 1"; the whole file then
+  fell back to Default and save-on-change wrote those defaults over the user's
+  real config. Notepad, VS Code and PowerShell's `Set-Content -Encoding utf8`
+  all produce BOMs. `load()` now trims it.
+- `TRONTEQ_THEME_WINDOW=1` opens the Theme window at startup - a no-injection
+  hook for screenshot-verifying this panel.
 # Changelog
 
 ## [0.11.0] - 2026-07-24
@@ -43,7 +69,7 @@ Discord-style multi-stop ramp, with a full Theme window to drive it.
 THE VIZ MEGAPASS. 13 GL modes became 33, plus a stackable post-FX layer.
 
 - **20 new shader modes** (winamp/milkdrop/shadertoy energy): Matrix rain, Scope
-  ring, Sky (the VR SimpleClouds port — clouds thicken on bass, sun flares on
+  ring, Sky (the VR SimpleClouds port â€” clouds thicken on bass, sun flares on
   beats), Aurora, Outrun, Spectrum city, Wormhole, Spirograph, Laser show,
   Disco ball, Hex pulse, Lightning, DNA helix, Bubbles, Copper bars, LED wall,
   Sonar, Pulsar, Black hole, Moonlit ocean. Every one beat-reactive, every one
@@ -52,7 +78,7 @@ THE VIZ MEGAPASS. 13 GL modes became 33, plus a stackable post-FX layer.
   hyperspace lurch on kicks), Flame got fierce (licking tongues, embers on
   beats), Julia breathes through a slow deep-zoom cycle with smooth (banding-
   free) iteration coloring.
-- **Post-FX overlay stack** — mix-and-match bits over ANY shader mode, feedback
+- **Post-FX overlay stack** â€” mix-and-match bits over ANY shader mode, feedback
   loop stays clean: Mirror, Zoom blur, Chromatic aberration, Pixelate,
   Halftone, CRT scanlines, Film grain + vignette, Strobe-on-downbeat, Edge
   glow, Thermal. Toggle chips live in VIZ > FX.
@@ -70,13 +96,13 @@ THE VIZ MEGAPASS. 13 GL modes became 33, plus a stackable post-FX layer.
 - **The GUI is no longer elevated.** Manifest went requireAdministrator ->
   asInvoker, so TrontEQ now runs as a normal Medium-integrity window. Why it
   matters: Windows refuses to deliver modifier-less global hotkeys registered
-  by Medium apps while an elevated window has focus — bare PrintScreen in
+  by Medium apps while an elevated window has focus â€” bare PrintScreen in
   TrontSnap (and ShareX!) went dead whenever TrontEQ was focused. Elevation
   also UIPI-broke drag/drop onto the window and focus handoff from normal apps.
   The GUI never needed admin for its actual job (it drives the APO through the
   state.bin memory map); only installs did.
 - "Apply EQ here" now launches tronteq-cli elevated on demand (one UAC prompt
-  per device retarget — rare). Output comes back via
+  per device retarget â€” rare). Output comes back via
   C:\ProgramData\TrontEq\install.log; declining the prompt is a clean error.
 - install now grants BUILTIN\Users Modify on C:\ProgramData\TrontEq so the
   Medium GUI can keep writing state.bin / settings.json / profiles.
@@ -123,55 +149,55 @@ The mouse-position fps mystery, dissected and killed:
 ## [0.7.1] - 2026-07-12
 
 Three shader fixes, all caught by the self-capture verify pipe (AI vision
-review), none by the user: Terrain (camera spawned inside the terrain — flat
+review), none by the user: Terrain (camera spawned inside the terrain â€” flat
 purple wash; now flies above a lower landscape with a finer 64-step march),
 Starfield (feedback accumulation blew out white; decay + bias-down + dimmer
 stars), Julia (non-escaping interior rendered max-bright; now near-black with
 a glowing boundary).
 
-## [0.7.0] - 2026-07-11/12 (night arc, wave 3 — ten more FX + the fixes)
+## [0.7.0] - 2026-07-11/12 (night arc, wave 3 â€” ten more FX + the fixes)
 
 - **VIEWPORT FIX**: GL modes no longer paint over the panels/toolbar. The
   present pass now restores egui_glow's own viewport + scissor and draws a
   plain fullscreen triangle (v0.6.0 disabled scissor and reprojected the rect
-  by hand — wrong on both counts).
+  by hand â€” wrong on both counts).
 - **Timestep decoupled**: shader clock is a sim clock advanced by CLAMPED dt
-  (max 50ms/frame) — frame stalls no longer fast-forward the FX. Repaint
+  (max 50ms/frame) â€” frame stalls no longer fast-forward the FX. Repaint
   pacing moved to a heartbeat thread (Boxel pattern: winit defers
   request_repaint_after deadlines; thread-side requests are immediate):
   60fps focused / 20 unfocused / 2 tray-hidden.
 - **Ten new GL modes**: Plasma, Starfield (feedback streaks), Kaleido
   (feedback fold), Ray tunnel, Metaballs (band-driven blobs), Voronoi
   (cells lit by FFT bins), Nebula (fbm clouds), **Terrain** (tron wireframe
-  mountains raymarched over a scrolling spectrum-HISTORY texture — the audio
+  mountains raymarched over a scrolling spectrum-HISTORY texture â€” the audio
   is literally the landscape), Ripples (beat-phase rings refracting the
   feedback), Julia (bass-orbited fractal). SHOW UI regrouped into painter +
   GL chip rows.
 - **Live-capture verification** (`livecap.ps1` + `verify-gl.sh`): PrintWindow
   captures of the running app per GL mode, reviewed by AI vision before the
-  user ever tests — closes the kittest/GL coverage gap.
+  user ever tests â€” closes the kittest/GL coverage gap.
 
-## [0.6.0] - 2026-07-11 (night arc, wave 2 — the shader leap)
+## [0.6.0] - 2026-07-11 (night arc, wave 2 â€” the shader leap)
 
 - **GL viz stage** (`glstage.rs`): real GLSL under the canvas via egui
   PaintCallback on the glow backend. Ping-pong RGBA16F feedback rendertextures
   (the Milkdrop trick: prev frame re-sampled through a warp, new content
   splatted on top), FFT buckets + waveform uploaded as R32F textures, VizBus
   stats (bass/mid/treble, pulse, beat phase, brightness) as uniforms.
-- **Three shader modes** in SHOW: **Warp (GL)** — feedback zoom/rotate/decay
-  with a beat-breathing spectrum ring; **Flame (GL)** — rising heat field fed
-  by the FFT at the floor, noisy cooling, kick flares; **Smoke (GL)** — curl-
+- **Three shader modes** in SHOW: **Warp (GL)** â€” feedback zoom/rotate/decay
+  with a beat-breathing spectrum ring; **Flame (GL)** â€” rising heat field fed
+  by the FFT at the floor, noisy cooling, kick flares; **Smoke (GL)** â€” curl-
   noise advected density with buoyancy and beat bursts. Painter layers + the
   EQ curve composite on top, so everything cross-pollinates.
 - GL init failure degrades gracefully (painter modes unaffected, logged).
 
 ## [0.5.1] - 2026-07-11 (night arc, wave 1)
 
-- **VizBus** (`vizbus.rs`): the data pipes, unified — band energies, spectral
+- **VizBus** (`vizbus.rs`): the data pipes, unified â€” band energies, spectral
   centroid + flux, beat pulse, **realtime BPM** (onset autocorrelation, 60-180,
   confidence + beat phase), momentary loudness, crest, stereo corr/width. Every
   signal keeps a 4s history. Zero steady-state allocation.
-- **DATA tab** (inspector): living pipe inspector — each signal as label +
+- **DATA tab** (inspector): living pipe inspector â€” each signal as label +
   sparkline + value; BPM hero readout with a beat-phase blinker; ENGINE section
   exposes the profiler scopes. What wiggles in DATA is what viz can be fed.
 - Versioning policy: patch bumps for incremental work; minor = real leaps.
@@ -180,19 +206,19 @@ a glowing boundary).
 
 Make-it-shine pass: dynamic themes, a real profiler, and a headless UI harness.
 
-- **Dynamic themes**: `color.rs` (colormagic — TrontColors' math, vendored via
+- **Dynamic themes**: `color.rs` (colormagic â€” TrontColors' math, vendored via
   Boxel's tested Rust port) + `theme.rs` rebuilt around a runtime Palette.
   Built-ins (Electric Cyan / Paper / Synthwave), 6 featured premades (Dracula,
   Tokyo Night, Gruvbox, Hades Fire, Deep Ocean, Arctic Aurora), and "Roll a
-  random theme" — flavor/harmony/premade rolls through an AutoTheme deriver
+  random theme" â€” flavor/harmony/premade rolls through an AutoTheme deriver
   with enforced WCAG contrast, so random is always readable. Persisted.
 - **Scoped profiler** (`profiler.rs`, Boxel pattern): update/panels/histories/
   canvas stopwatches, EMA + last-frame spike columns, F10 overlay. Zero
   per-frame heap. Killed the two per-frame history-Vec clones in update()
   (split borrows instead).
 - **Headless UI harness** (`uitest/` crate, `cargo run -p tronteq-uitest`):
-  egui_kittest + wgpu renders 19 PNG snapshots — canvas dark/light, every SHOW
-  mode, About at 100%/200%, and a theme sheet incl. random rolls — reviewable
+  egui_kittest + wgpu renders 19 PNG snapshots â€” canvas dark/light, every SHOW
+  mode, About at 100%/200%, and a theme sheet incl. random rolls â€” reviewable
   without launching the app. Lives outside the gui crate because the admin
   manifest makes gui test binaries unrunnable. Caught its first real bug on
   run one (About's display-font family panics if fonts aren't installed).
@@ -235,7 +261,7 @@ The "full signal chain + viz" era, previously unchangelogged (S56-S59):
 - Chain became Preamp -> EQ -> AGC -> Compressor -> Limiter (IPC 144 -> 192 B);
   8 filter types; custom rotary knobs; per-component presets.
 - Viz suite: FFT spectrum bars, peak-hold, analyzer line, spectrogram waterfall,
-  waveform, stereo goniometer, loudness history — stackable layers. Rajdhani font,
+  waveform, stereo goniometer, loudness history â€” stackable layers. Rajdhani font,
   rainbow theme, light/dark chrome, About, tray, autostart, UI zoom.
 - APO telemetry block (IPC 192 -> 216 B): true in/out VU + gain-reduction readout.
 - Renderer swapped wgpu/DX12 -> glow/OpenGL after DX12 device-loss crashes +

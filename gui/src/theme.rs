@@ -746,6 +746,17 @@ pub fn set_frost(dark: bool, v: f32) {
     }
 }
 
+/// Re-apply egui Visuals from the CURRENT palette + frost + gradient state.
+///
+/// Needed because frost lives in `build_visuals`'s panel alpha, and unlike
+/// `set_palette`/`set_mode`/`set_gradient` — which each re-apply — storing a new
+/// frost value on its own changed nothing on screen until something else
+/// happened to rebuild the style. That was the whole "frost didn't work" bug:
+/// the value was stored and read correctly, it just never reached egui.
+pub fn refresh_visuals(ctx: &egui::Context) {
+    ctx.set_visuals(build_visuals());
+}
+
 pub fn gradient_cfg() -> GradientCfg {
     *GRAD_CFG.read().unwrap()
 }

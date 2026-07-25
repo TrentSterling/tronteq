@@ -29,25 +29,113 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
     if show_win {
         let mut open = true;
+        // ONE height budget, shared. The window frame gets `win_h`; the scroll
+        // viewport gets that minus the title bar and frame margins, so the
+        // SCROLL AREA is what clamps the content. Sizing the two independently is
+        // exactly what left the bottom half clipped by the window instead of
+        // scrolled by the area — the window won the fight and swallowed Frost,
+        // the mode chips and every peg picker.
+        // Constrain ONLY the scroll viewport, never the window frame. Clamping
+        // the Window's max_height just truncates the frame and clips whatever is
+        // inside it — the ScrollArea then believes it fits and never scrolls, so
+        // the bottom of the panel silently vanishes. Leaving the window free to
+        // auto-size around a deliberately conservative viewport is what makes the
+        // scrollbar appear and Frost / mode chips / peg pickers reachable.
+        let scroll_h = (ctx.content_rect().height() * 0.62).max(200.0);
         egui::Window::new("Theme")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(280.0)
+            // TrontEQ's window is 460px tall by default — barely half of
+            // SpaceView's, where this UI was designed. Without a height cap and
+            // a scrollbar the panel simply ran off the bottom of the app, which
+            // silently hid Frost, the Harmony/Presets/Custom chips, the peg
+            // count and every peg picker: they rendered, just below the screen.
+            // Same fix the About window already uses in this repo.
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .show(ctx, |ui| {
+                // MAKE THE SCROLLBAR VISIBLE. This panel was scrollable all
+                // along; egui draws the handle with `widgets.inactive.bg_fill`,
+                // which in this theme lands within a few RGB units of the panel
+                // fill. Measured on a capture: the bar column was byte-identical
+                // to the background, so the window read as simply truncated and
+                // Frost / the mode chips / the peg pickers looked missing rather
+                // than one scroll away.
+                {
+                    let accent = theme::cyan();
+                    let v = ui.visuals_mut();
+                    v.widgets.inactive.bg_fill = accent.gamma_multiply(0.55);
+                    v.widgets.hovered.bg_fill = accent;
+                    v.widgets.active.bg_fill = accent;
+                }
+                // `floating` is egui's DEFAULT scroll style: the bar is an overlay
+                // that fades in on hover, which is why ScrollBarVisibility::
+                // AlwaysVisible appeared to do nothing and a pixel scan of the
+                // window's right edge found only panel fill. Turning it off gives
+                // a solid, always-present bar that also reserves its own width.
+                ui.spacing_mut().scroll.floating = false;
+                ui.spacing_mut().scroll.bar_width = 10.0;
+
+                // COMPACT METRICS for this panel only. TrontEQ's house spacing is
+                // deliberately generous — right for the main HUD chrome, far too
+                // tall for a dense settings panel. At full spacing the control set
+                // needed ~750px inside a window that gets ~430, which is why the
+                // bottom half (Frost, mode chips, peg pickers) lived below the
+                // fold. Tightening rows here is what actually makes it all fit.
+                {
+                    let sp = ui.spacing_mut();
+                    sp.item_spacing.y = 3.0;
+                    sp.interact_size.y = 19.0;
+                    sp.button_padding = egui::vec2(6.0, 2.0);
+                }
+
+                // Window::max_height + vscroll(true) did NOT clamp this panel —
+                // the big inline picker forces a tall minimum and the bottom half
+                // still ran off the app window. An explicit ScrollArea with a
+                // computed height is deterministic, and it is what actually makes
+                // Frost / the mode chips / the peg pickers reachable in a 460px
+                // tall app.
+                egui::ScrollArea::vertical()
+                    .max_height(scroll_h)
+                    // Take the full viewport instead of shrinking to content, so
+                    // the height above is a real constraint.
+                    .auto_shrink([false, false])
+                    // ALWAYS show the bar: the full control set is taller than
+                    // this app's window no matter how compact the picker gets, so
+                    // the user has to be able to SEE that there is more below.
+                    // A hover-only scrollbar is why it read as "just missing".
+                    .scroll_bar_visibility(
+                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                    )
+                    .show(ui, |ui| {
                 // ---- THE picker, big and up front: one swatch exists (the
                 // toolbar block); in here the full picker IS the interface.
+                // The picker lives in a COLLAPSED header by default. It is ~280px
+                // tall — more than half of everything this window gets inside
+                // TrontEQ's 460px-tall app — and while it was expanded it pushed
+                // Frost, the mode chips and every peg picker off the bottom. The
+                // toolbar swatch is already the shortcut for "I want to pick a
+                // color"; opening this panel is usually about the gradient. One
+                // click expands it, and the header carries the live accent so you
+                // can still see what the theme is.
                 let acc = theme::cyan();
-                let mut accent_color = acc;
-                if egui::color_picker::color_picker_color32(
-                    ui,
-                    &mut accent_color,
-                    egui::color_picker::Alpha::Opaque,
-                ) {
-                    let rgb = [accent_color.r(), accent_color.g(), accent_color.b()];
-                    let dark = theme::dark_mode();
-                    theme::set_palette(ctx, theme::Palette::from_accent(rgb, dark));
-                }
+                egui::CollapsingHeader::new("Accent color")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let mut accent_color = acc;
+                        ui.spacing_mut().slider_width = 104.0;
+                        if egui::color_picker::color_picker_color32(
+                            ui,
+                            &mut accent_color,
+                            egui::color_picker::Alpha::Opaque,
+                        ) {
+                            let rgb = [accent_color.r(), accent_color.g(), accent_color.b()];
+                            let dark = theme::dark_mode();
+                            theme::set_palette(ctx, theme::Palette::from_accent(rgb, dark));
+                        }
+                    });
                 ui.separator();
 
                 // ---- Dark|Light chips + premades combo + Random, one row --
@@ -138,32 +226,44 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 );
                 ui.add_space(6.0);
 
-                ui.label("Direction");
-                dirty |= ui
-                    .add(egui::Slider::new(&mut cfg.angle_deg, 0.0..=360.0).suffix(" deg"))
-                    .changed();
-                ui.label("Intensity");
-                dirty |= ui
-                    .add(
-                        egui::Slider::new(&mut cfg.intensity, 0.0..=1.0)
-                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                    )
-                    .changed();
+                // Labels INLINE with their sliders: a label-above-slider stack
+                // costs ~22px per control, and three of them was the difference
+                // between the peg pickers fitting and not.
+                ui.horizontal(|ui| {
+                    ui.label("Direction");
+                    dirty |= ui
+                        .add(egui::Slider::new(&mut cfg.angle_deg, 0.0..=360.0).suffix(" deg"))
+                        .changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Intensity");
+                    dirty |= ui
+                        .add(
+                            egui::Slider::new(&mut cfg.intensity, 0.0..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                        )
+                        .changed();
+                });
                 // FROST: panel opacity over the wash. 0% = panels vanish,
                 // background IS the preview ramp (WYSIWYG); high = solid chrome.
-                ui.label("Frost");
                 let dark = theme::dark_mode();
                 let mut frost = theme::frost(dark);
-                if ui
-                    .add(
-                        egui::Slider::new(&mut frost, 0.0..=1.0)
-                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                    )
-                    .changed()
-                {
-                    theme::set_frost(dark, frost);
-                    dirty = true;
-                }
+                ui.horizontal(|ui| {
+                    ui.label("Frost");
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut frost, 0.0..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                        )
+                        .changed()
+                    {
+                        theme::set_frost(dark, frost);
+                        // Frost only exists inside build_visuals' panel alpha, so
+                        // it has to be re-applied to be seen at all.
+                        theme::refresh_visuals(ctx);
+                        dirty = true;
+                    }
+                });
                 ui.separator();
 
                 // Source mode chips: harmony / preset shelf / custom.
@@ -326,6 +426,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         // sweet spot the defaults describe is unreachable.
                         theme::set_frost(true, 0.85);
                         theme::set_frost(false, 0.59);
+                        theme::refresh_visuals(ctx);
                         dirty = true;
                     }
                 });
@@ -333,6 +434,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 if dirty {
                     theme::set_gradient_cfg(cfg);
                 }
+                });
             });
         if !open {
             show_win = false;

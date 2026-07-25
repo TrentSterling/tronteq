@@ -100,7 +100,14 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn load() -> Self {
         match std::fs::read_to_string(SETTINGS_FILE) {
-            Ok(s) => match serde_json::from_str::<AppSettings>(&s) {
+            // Tolerate a UTF-8 BOM. serde_json rejects one outright with
+            // "expected value at line 1 column 1", which sends this whole file to
+            // Default and then save-on-change overwrites the user's real settings
+            // with those defaults — a silent, total config wipe. Anything that
+            // edits this file by hand can introduce a BOM: Notepad, VS Code, and
+            // PowerShell's `Set-Content -Encoding utf8` all do (that last one is
+            // how it was found). One trim is cheaper than the footgun.
+            Ok(s) => match serde_json::from_str::<AppSettings>(s.trim_start_matches('\u{feff}')) {
                 Ok(mut a) => {
                     a.zoom = a.zoom.clamp(0.5, 2.0);
                     a

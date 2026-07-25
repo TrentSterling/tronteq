@@ -521,7 +521,7 @@ impl App {
             profiler: profiler::Profiler::default(),
             vizbus: vizbus::VizBus::new(),
             gl_stage,
-            show_theme_window: false,
+            show_theme_window: std::env::var_os("TRONTEQ_THEME_WINDOW").is_some(),
             gradient_preset_sync: ui_settings.gradient_preset_sync,
             settings_cache: ui_settings,
         };
