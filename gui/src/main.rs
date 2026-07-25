@@ -93,9 +93,52 @@ fn install_crash_logger() {
     }));
 }
 
+/// Loopback port used to poke an already-running instance into showing itself.
+/// Belt and suspenders for "TrontEQ is unlocatable": the process can be alive
+/// and hidden to tray while its tray icon has gone stale (the shell drops it on
+/// an Explorer restart), and `schtasks /run` REFUSES to help because the task is
+/// already Running. Launching the exe again now always surfaces the window
+/// instead of silently doing nothing.
+const SHOW_PORT: u16 = 48762;
+
+/// Set by the acceptor thread when a second launch asks us to surface.
+static SHOW_REQUEST: AtomicBool = AtomicBool::new(false);
+/// The main window handle, published so the acceptor thread can raise the window
+/// itself without waiting on `update()` (which is skipped while tray'd).
+static APP_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
 fn main() -> Result<()> {
     install_crash_logger();
     log_line(&format!("start pid={}", std::process::id()));
+
+    // Single instance: own the port, or hand the request to whoever does.
+    let listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, SHOW_PORT)) {
+        Ok(l) => l,
+        Err(_) => {
+            use std::io::Write as _;
+            log_line("second instance: poking the running one to show, then exiting");
+            if let Ok(mut s) =
+                std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, SHOW_PORT))
+            {
+                let _ = s.write_all(b"show");
+            }
+            return Ok(());
+        }
+    };
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if stream.is_ok() {
+                // Raise it from HERE (Win32, no eframe involvement) so this works
+                // even if the UI thread is wedged, then flag it so update() puts
+                // the app's own `visible` state back in sync.
+                let h = APP_HWND.load(Ordering::Relaxed);
+                if h != 0 {
+                    win::show_window(h);
+                }
+                SHOW_REQUEST.store(true, Ordering::Relaxed);
+            }
+        }
+    });
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("TrontEQ")
         // Custom chrome: the toolbar is the title bar (window_chrome.rs owns the
@@ -237,6 +280,9 @@ impl App {
                 _ => None,
             })
             .unwrap_or(0);
+        // Publish it so the single-instance acceptor thread can raise the window
+        // without going through eframe (see SHOW_PORT).
+        APP_HWND.store(app_hwnd, Ordering::Relaxed);
 
         let state = state_writer::StateWriter::open()?;
         // If the file already had a committed version, prefer that state.
@@ -627,6 +673,15 @@ impl eframe::App for App {
         // being tray'd). Skipping the frame entirely removes the trigger and saves a
         // core while tray'd. The tray Show/DoubleClick handlers flip `visible` back
         // on and call request_repaint(), so showing is still instant.
+        // A second launch (shortcut, Start menu, `tronteq.exe`) asked us to
+        // surface. The acceptor thread already raised the OS window; this puts
+        // our own hidden/visible bookkeeping back in sync so the UI resumes.
+        if SHOW_REQUEST.swap(false, Ordering::Relaxed) {
+            win::show_window(self.app_hwnd);
+            self.visible.store(true, Ordering::Relaxed);
+            log_line("show request from a second launch");
+        }
+
         if !self.visible.load(Ordering::Relaxed) {
             return; // the heartbeat thread keeps a 2fps pulse while tray'd
         }
