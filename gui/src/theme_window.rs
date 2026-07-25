@@ -41,7 +41,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         // the bottom of the panel silently vanishes. Leaving the window free to
         // auto-size around a deliberately conservative viewport is what makes the
         // scrollbar appear and Frost / mode chips / peg pickers reachable.
-        let scroll_h = (ctx.content_rect().height() * 0.62).max(200.0);
+        // Now that the panel starts at a known inset from the top, it can use
+        // nearly the whole app height: subtract the inset, the title bar and the
+        // frame margins rather than guessing with a fraction.
+        let scroll_h = (ctx.content_rect().height() - 112.0).max(200.0);
         egui::Window::new("Theme")
             .open(&mut open)
             .collapsible(false)
@@ -53,8 +56,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             // silently hid Frost, the Harmony/Presets/Custom chips, the peg
             // count and every peg picker: they rendered, just below the screen.
             // Same fix the About window already uses in this repo.
-            .default_pos(ctx.content_rect().center())
-            .pivot(egui::Align2::CENTER_CENTER)
+            // Deterministic placement near the top-left of the content area.
+            // Centering via `default_pos(content_rect().center())` was evaluated
+            // on the FIRST frame, before the viewport size settles, so the panel
+            // landed low-right and its bottom rows fell off the app edge. A fixed
+            // inset always starts fully inside, and the window stays draggable
+            // (an `anchor()` would pin it immovably - the Boxel lesson).
+            .default_pos(ctx.content_rect().min + egui::vec2(28.0, 28.0))
+            .pivot(egui::Align2::LEFT_TOP)
+            // egui remembers a window's position across sessions, so a panel that
+            // was dragged (or auto-placed) near the bottom stays there even after
+            // it grows — and its lower rows get clipped by the app edge, which
+            // looks exactly like "the pegs are missing" all over again. Pin it
+            // inside the app rect so the whole panel is always reachable.
+            .constrain_to(ctx.content_rect())
             .show(ctx, |ui| {
                 // MAKE THE SCROLLBAR VISIBLE. This panel was scrollable all
                 // along; egui draws the handle with `widgets.inactive.bg_fill`,
@@ -370,6 +385,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                     ui.horizontal(|ui| {
+                        // A color_edit_button draws its swatch at `interact_size`,
+                        // whose default is a THIN SLIVER (same trap TrontSnap hit
+                        // — it sizes the swatch 96x30 explicitly for this reason).
+                        // The compact metrics this panel sets for its slider rows
+                        // shrank it further, which is why this row rendered as an
+                        // empty gap: the buttons were there, just ~0px of paint.
+                        ui.spacing_mut().interact_size = egui::vec2(42.0, 24.0);
                         // SLOT 0 IS THE ACCENT (linked): editing it rethemes
                         // the app; it always participates in the ramp.
                         // Slots 1..N are free pegs.
