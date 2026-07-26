@@ -16,6 +16,26 @@ use eframe::egui;
 use crate::color;
 use crate::{theme, App};
 
+/// Read-only view of the pegs the ramp actually resolved to.
+///
+/// In Harmony and Presets mode the stops are derived, so there is no picker to
+/// show — which previously meant the row was an empty 26px spacer and you had no
+/// way to know what colours the gradient was built from.
+fn read_only_pegs(ui: &mut egui::Ui) {
+    let pegs = theme::gradient_pegs();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        for p in &pegs {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0, 20.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, border);
+            ui.painter()
+                .rect_filled(rect.shrink(1.0), 3.0, egui::Color32::from_rgb(p[0], p[1], p[2]));
+            resp.on_hover_text(color::rgb_to_hex(*p));
+        }
+    });
+}
+
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut show_win = app.show_theme_window;
     if !show_win {
@@ -370,9 +390,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             }
                         }
                     }
-                    // Height parity with the two-row modes so the window
-                    // doesn't jump when switching sources.
-                    ui.add_space(26.0);
+                    // Harmony and Presets derive their pegs, so there is nothing
+                    // to edit — but you should still be able to SEE what stops
+                    // the ramp landed on. Read-only swatches, same height as the
+                    // spacer they replace so the window still doesn't jump.
+                    read_only_pegs(ui);
                 } else {
                     // Custom: your colors, your rules.
                     ui.horizontal(|ui| {

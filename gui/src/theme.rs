@@ -884,16 +884,12 @@ pub fn gradient_pegs() -> Vec<Rgb> {
 /// ONE-COLOR THEME MODE: a single peg gets an auto-derived deep (dark mode)
 /// or airy (light mode) partner so the ramp is a monochrome sweep instead of
 /// a flat fill - smart slots means 1 peg is a real, good-looking choice.
-fn mono_partner(mut pegs: Vec<Rgb>, dark: bool) -> Vec<Rgb> {
-    if pegs.len() == 1 {
-        let h = color::rgb_to_hsl(pegs[0]);
-        let partner = if dark {
-            color::hsl_to_rgb(h.h, h.s, (h.l * 0.40).max(8.0))
-        } else {
-            color::hsl_to_rgb(h.h, (h.s * 0.8).max(15.0), (h.l * 1.35).min(90.0))
-        };
-        pegs.push(partner);
-    }
+fn mono_partner(pegs: Vec<Rgb>, _dark: bool) -> Vec<Rgb> {
+    // ONE PEG MEANS ONE COLOUR. This used to derive a second stop so a single peg
+    // still swept, but that silently turns "1 peg" into two, which shows up as an
+    // unexpected extra swatch in the editor. A gradient with one peg IS a solid
+    // colour choice: `ramp` returns that colour at every t, so intensity alone
+    // decides how strongly it covers the ground.
     pegs
 }
 
