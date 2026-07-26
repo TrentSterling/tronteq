@@ -159,7 +159,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 egui::CollapsingHeader::new("Accent color")
                     .default_open(false)
                     .show(ui, |ui| {
-                        let mut accent_color = acc;
+                        // Bind to the RAW pick, not `theme::cyan()` (the enforced
+                        // ink accessor). Seeding from the corrected value handed the
+                        // widget its own output every frame, so yellow was walked
+                        // toward readable-on-panel and snapped back to brown, and
+                        // black could not be selected at all.
+                        let seed = theme::accent_seed();
+                        let mut accent_color =
+                            egui::Color32::from_rgb(seed[0], seed[1], seed[2]);
                         ui.spacing_mut().slider_width = 104.0;
                         if egui::color_picker::color_picker_color32(
                             ui,

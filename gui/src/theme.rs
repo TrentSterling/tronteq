@@ -319,6 +319,10 @@ impl Palette {
     /// picker + gradient-preset-sync can retheme without fighting the
     /// current dark/light choice.
     pub fn from_accent(accent: Rgb, dark: bool) -> Palette {
+        // Record intent at the one point a raw pick enters the theme, so the
+        // picker and the gradient can read back exactly what was chosen rather
+        // than the readability-corrected version of it.
+        set_accent_seed(accent);
         // DISCORD GROUND PARITY: the ground takes the accent's hue at low
         // saturation, scaled by the pick's own saturation so a gray/black
         // accent yields a neutral ground instead of being forced colorful.
@@ -398,6 +402,24 @@ static CURRENT: LazyLock<RwLock<Palette>> =
 /// Discord-style background wash toggle. Default ON; persisted in
 /// settings.json like the palette itself (see `AppSettings::gradient`).
 static GRADIENT: LazyLock<RwLock<bool>> = LazyLock::new(|| RwLock::new(true));
+
+/// The accent the USER picked, raw and unprocessed.
+///
+/// THE RULE: the picker binds to intent, never to the processed result. It used
+/// to seed from `theme::cyan()`, which is the ENFORCED ink accessor (already
+/// walked for readability against the panel), so every frame the widget was
+/// handed back its own corrected output. Dragging toward yellow got walked
+/// darker and desaturated and snapped to brown, and pure black was unreachable.
+/// Enforcement still happens downstream, where it cannot write back here.
+static ACCENT_SEED: LazyLock<RwLock<Rgb>> = LazyLock::new(|| RwLock::new([86, 204, 255]));
+
+/// The raw, unprocessed accent the user chose. The picker and gradient read this.
+pub fn accent_seed() -> Rgb {
+    *ACCENT_SEED.read().unwrap()
+}
+pub fn set_accent_seed(rgb: Rgb) {
+    *ACCENT_SEED.write().unwrap() = rgb;
+}
 
 pub fn gradient_enabled() -> bool {
     *GRADIENT.read().unwrap()
@@ -845,7 +867,9 @@ pub fn gradient_pegs() -> Vec<Rgb> {
     if cfg.preset == -2 {
         let n = cfg.pegs.clamp(1, 4) as usize;
         let mut pegs: Vec<Rgb> = Vec::with_capacity(n.max(2));
-        pegs.push(rgb_of(p.accent));
+        // Slot 0 is the RAW pick, not `p.accent` (enforced-for-ink and therefore
+        // shifted): a pure yellow pick must reach the wash as pure yellow.
+        pegs.push(accent_seed());
         if n > 1 {
             pegs.extend_from_slice(&cfg.custom[1..n]);
         }
@@ -866,7 +890,9 @@ pub fn gradient_pegs() -> Vec<Rgb> {
 
     // Harmony mode: pegs derived from the live accent, clash-proof by rule.
     let rule = color::HARMONY_RULES[(cfg.harmony as usize) % color::HARMONY_RULES.len()];
-    let base = color::rgb_to_hsl(rgb_of(p.accent));
+    // Spread from the RAW pick too, so the harmony is a family around the colour
+    // that was actually chosen rather than its ink-corrected cousin.
+    let base = color::rgb_to_hsl(accent_seed());
     let spread = color::generate_harmony(base, rule);
     let derived: Vec<Rgb> = spread
         .into_iter()
