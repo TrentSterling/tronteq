@@ -674,7 +674,9 @@ fn build_visuals() -> egui::Visuals {
     // stack OVER an already-translucent panel, so they get a near-solid fill
     // instead of inheriting the panel's alpha (SpaceView precedent: "almost
     // too clear" otherwise).
-    let window_alpha: u8 = if gradient_enabled() { 246 } else { 255 };
+    // Fully opaque, not 246: `window_fill` also paints menus and popups, and a
+    // dropdown you have to read should never sit on a moving gradient at all.
+    let window_alpha: u8 = 255;
     v.window_fill =
         Color32::from_rgba_unmultiplied(p.panel.r(), p.panel.g(), p.panel.b(), window_alpha);
     v.window_stroke = Stroke::new(1.0, border(40));
