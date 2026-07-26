@@ -803,7 +803,14 @@ impl eframe::App for App {
                 // flip, which stays as its own one-click shortcut.
                 let (srect, sresp) =
                     ui.allocate_exact_size(egui::vec2(26.0, 18.0), egui::Sense::click());
-                ui.painter().rect_filled(srect, 4.0, theme::cyan());
+                // Show the colour the USER picked, not `theme::cyan()` (the
+                // enforced ink accessor). This swatch answers "what is my theme
+                // colour", so painting the readability-corrected value made a
+                // yellow pick read as brown right next to the picker holding
+                // 255,246,0.
+                let seed = theme::accent_seed();
+                ui.painter()
+                    .rect_filled(srect, 4.0, egui::Color32::from_rgb(seed[0], seed[1], seed[2]));
                 let ring = if sresp.hovered() || self.show_theme_window {
                     egui::Stroke::new(1.5, theme::text())
                 } else {
