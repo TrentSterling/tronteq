@@ -81,24 +81,23 @@ pub fn is_cloaked(hwnd: isize) -> bool {
     }
 }
 
-/// Hide the window entirely (no taskbar button — true tray).
+/// Drop to the tray: minimized, with no taskbar button and no alt-tab entry.
 ///
-/// MINIMIZE FIRST, then hide. Both steps are load-bearing:
+/// DELIBERATELY NOT SW_HIDE, which is what this used to do and what cost a full
+/// CPU core around the clock (measured 2026-07-26: 643 minutes of CPU over 14.7
+/// hours of uptime, 98.6% of it on the main thread, none of it on the audio
+/// capture). winit never delivers a redraw to a hidden window, and an
+/// outstanding repaint request keeps its event loop in Poll instead of Wait, so
+/// the loop spun forever on a request that could never be serviced. Hiding via
+/// winit's own `ViewportCommand::Visible(false)` behaves identically, and so
+/// does SW_MINIMIZE followed by SW_HIDE — both were measured at ~98%.
 ///
-/// - SW_HIDE alone leaves winit's event loop spinning at 100% of a core. egui's
-///   last rendered frame asks for an immediate repaint (this UI animates
-///   constantly), the window then stops existing as far as redraw dispatch is
-///   concerned, and that outstanding request can never be retired — so the loop
-///   stays in Poll forever instead of dropping to Wait. Measured 2026-07-26:
-///   TrontEQ burned a full core the entire time it sat in the tray, and it was
-///   the main thread doing it, not the audio capture or the heartbeat.
-/// - SW_MINIMIZE puts winit into its minimized state, where it suppresses
-///   redraws outright and the loop actually idles (~1% of a core).
-/// - SW_HIDE after that removes the taskbar button, which is what makes it a
-///   tray app rather than a minimized one.
+/// Minimized is the one state where winit genuinely idles (~0%), so that is the
+/// state we park in. WS_EX_TOOLWINDOW is what makes a minimized window read as
+/// tray'd: it is excluded from both the taskbar and alt-tab. The style is set
+/// while the window is still on screen so the shell notices the change.
 ///
-/// `show_window` already does SW_RESTORE before SW_SHOW, so the round trip
-/// unwinds both steps.
+/// `show_window` clears the style before restoring, so the round trip unwinds.
 pub fn hide_window(hwnd: isize) {
     if hwnd == 0 {
         return;

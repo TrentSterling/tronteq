@@ -812,18 +812,16 @@ impl eframe::App for App {
         let presentable = self.presentable(ctx);
         self.visible.store(presentable, Ordering::Relaxed);
         if !presentable {
-            // Sleep, don't just return. When the window is on screen the GL
-            // buffer swap blocks on vsync and paces the loop for us; a window
-            // hidden with SW_HIDE has no such backpressure, so bailing out early
-            // free-runs the event loop and burns a whole core doing nothing.
-            // Measured 2026-07-26: 99% of a core while tray'd, which is most of
-            // what looked like the 15x15 bug. (Minimized windows escaped this
-            // only because winit suppresses their redraws outright.)
+            // Build no UI and upload no textures. Beyond the CPU saving this is
+            // also what stopped the 2026-06-04 crash: re-uploading egui-managed
+            // textures (spectrogram waterfall, About icon) to an off-screen
+            // surface eventually invalidated one and panicked in create_view.
             //
-            // Blocking the message pump here is safe: nothing can interact with
-            // an invisible window, and the tray handlers drive raw Win32
-            // directly, so the worst cost is up to 100ms of extra latency on a
-            // tray click.
+            // Pacing is NOT this function's job. Whether the loop actually idles
+            // is decided by the window state we park in (see win::hide_window)
+            // and by the heartbeat declining to pulse at a window that cannot
+            // service a repaint. Sleeping here was tried and changed nothing,
+            // because while tray'd this function is not called at all.
             return;
         }
 
