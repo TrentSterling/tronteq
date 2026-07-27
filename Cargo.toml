@@ -3,7 +3,7 @@ resolver = "2"
 members = ["shared", "cli", "gui", "uitest"]
 
 [workspace.package]
-version = "0.12.1"
+version = "0.12.2"
 edition = "2021"
 authors = ["Trent Sterling"]
 license = "MIT"
@@ -35,6 +35,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
+    # DWMWA_CLOAKED: the one "you can't see this" state IsWindowVisible lies about
+    # (window parked on another virtual desktop). See win::is_cloaked.
+    "Win32_Graphics_Dwm",
 ] }
 
 [profile.release]

@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.12.2] - 2026-07-26
+
+TrontEQ was burning a full CPU core around the clock. Reported as "why is this
+using 4-5% when the window isn't even open", measured at 643 minutes of CPU over
+14.7 hours of uptime. Two separate causes, neither of them the audio engine.
+
+- **The tray was the expensive part.** Hiding to tray used `SW_HIDE`. winit
+  never delivers a redraw to a hidden window, and an outstanding repaint request
+  keeps its event loop in `Poll` rather than `Wait`, so the main thread spun at
+  100% of a core servicing a request that could never be answered. It was not
+  rendering anything; per-thread sampling put 98.6% on the main thread and 0.5%
+  on the audio capture. The tray state is now **minimized + `WS_EX_TOOLWINDOW`**,
+  which keeps it out of the taskbar and out of alt-tab while leaving winit in the
+  one state where it genuinely idles. Tray'd cost went from 99% of a core to 0%.
+- **The idle pulse aimed at a window that could not receive it.** The heartbeat
+  thread pulsed `request_repaint()` every 500ms regardless of window state, which
+  is what kept the request outstanding. It now pulses only when Win32 says the
+  window is on screen. Reading the OS rather than our own flags is deliberate:
+  the second-launch path restores the window from a thread with no egui context,
+  so polling real state is what makes every wake route work.
+- **The window could collapse to 15x15 and keep rendering.** After a tray round
+  trip `SW_RESTORE` could bring the window back far below its minimum inner size,
+  parked in the corner where it read as "not open" while still costing a full
+  core. `heal_tiny_window` (ported from TrontSnap, which hit this first) restores
+  the last sane size after four consecutive undersized frames.
+- **Minimize and virtual desktops now idle too.** `visible` used to mean only
+  "the close button has not hidden us", so a minimized window still ran at a
+  locked 60fps. Presentability is now derived every frame from tray state,
+  minimized state, `DWMWA_CLOAKED` (window parked on another virtual desktop) and
+  a collapsed-size failsafe.
+- **Fixed a livelock introduced while fixing the above:** the derived flag was
+  briefly its own input, so minimizing cleared it and restoring had nothing to set
+  it back, leaving the window on screen frozen at 2fps. Latched tray state and
+  derived presentability are now separate values.
+- Each thread logs its OS thread id at startup, which is what made the main
+  thread identifiable as the spinner instead of the audio capture.
+
 ## [0.11.1] - 2026-07-25
 
 Gradient v2 was half-reachable. Three real bugs, all found by capturing the

@@ -58,6 +58,7 @@ impl Visualizer {
         let stx = stereo.clone();
         let stop2 = stop.clone();
         let handle = std::thread::spawn(move || unsafe {
+            crate::log_line(&format!("thread: viz-capture tid={}", crate::tid()));
             let _ = capture_loop(&s2, &sp2, &lv2, &stx, &stop2);
         });
         Visualizer { samples, spectrum, level, stereo, stop, handle: Some(handle) }

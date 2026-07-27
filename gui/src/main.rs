@@ -107,9 +107,15 @@ static SHOW_REQUEST: AtomicBool = AtomicBool::new(false);
 /// itself without waiting on `update()` (which is skipped while tray'd).
 static APP_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// OS thread id, for correlating a hot thread in Task Manager with the code that
+/// spawned it.
+fn tid() -> u32 {
+    unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
+}
+
 fn main() -> Result<()> {
     install_crash_logger();
-    log_line(&format!("start pid={}", std::process::id()));
+    log_line(&format!("start pid={} main tid={}", std::process::id(), tid()));
 
     // Single instance: own the port, or hand the request to whoever does.
     let listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, SHOW_PORT)) {
@@ -126,6 +132,7 @@ fn main() -> Result<()> {
         }
     };
     std::thread::spawn(move || {
+        log_line(&format!("thread: show-acceptor tid={}", tid()));
         for stream in listener.incoming() {
             if stream.is_ok() {
                 // Raise it from HERE (Win32, no eframe involvement) so this works
@@ -206,7 +213,19 @@ struct App {
     // Tray (hide-to-tray on close so the control panel stays alive)
     _tray: Option<TrayIcon>,
     app_hwnd: isize,
-    visible: Arc<AtomicBool>, // false while hidden-to-tray -> slow idle repaint
+    /// LATCHED: the close button hid us to the tray. Only the tray Show /
+    /// DoubleClick handlers and a second launch clear it. A tray'd window gets
+    /// no OS events, so nothing may infer this one.
+    tray_hidden: Arc<AtomicBool>,
+    /// DERIVED: false whenever nobody can see the window (tray'd, minimized,
+    /// cloaked, collapsed) -> slow idle repaint. Recomputed every frame by
+    /// `presentable`; read by the heartbeat thread.
+    visible: Arc<AtomicBool>,
+    /// Last inner size that was actually sane, to restore to when the window
+    /// desyncs. See `heal_tiny_window`.
+    good_size: egui::Vec2,
+    /// Consecutive frames observed below the minimum inner size.
+    small_frames: u32,
     fps_frames: u32,
     fps_t0: std::time::Instant,
     fps: f32, // measured delivered framerate (DATA/SETUP readout)
@@ -395,8 +414,18 @@ impl App {
             "tray: FAILED to build (close will exit instead of hiding)"
         });
 
-        // Tracks shown vs hidden-to-tray so update() can drop to a slow idle
-        // repaint instead of burning a core at 60fps with no window on screen.
+        // TWO flags, because conflating them is a livelock:
+        //
+        // `tray_hidden` is LATCHED state. Only the close-button intercept sets
+        // it; only the tray Show/DoubleClick handlers (and a second launch)
+        // clear it. Nothing else may touch it, because a hidden window gets no
+        // OS events to recover from on its own.
+        //
+        // `visible` is DERIVED state, recomputed every frame by `presentable`
+        // and read by the heartbeat thread to pick 60fps vs a 2fps idle pulse.
+        // Minimize/cloak/collapse feed only this one, so they self-recover the
+        // moment the condition clears.
+        let tray_hidden = Arc::new(AtomicBool::new(false));
         let visible = Arc::new(AtomicBool::new(true));
 
         // Repaint heartbeat thread (Boxel pattern): winit DEFERS
@@ -414,6 +443,7 @@ impl App {
             let c = ctx.clone();
             let v = visible.clone();
             std::thread::spawn(move || {
+                log_line(&format!("thread: heartbeat tid={}", tid()));
                 unsafe {
                     let _ = windows::Win32::Media::timeBeginPeriod(1);
                 }
@@ -423,7 +453,24 @@ impl App {
                     if !v.load(Ordering::Relaxed) {
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         next = std::time::Instant::now() + tick;
-                        c.request_repaint();
+                        // Pulse ONLY at a window the OS says is on screen.
+                        //
+                        // winit never services a repaint request for a window that
+                        // is hidden or minimized, and an outstanding request keeps
+                        // its event loop in Poll instead of Wait. So an idle pulse
+                        // aimed at a tray'd window does not merely go to waste, it
+                        // pins the main thread at 100% of a core. That is what
+                        // TrontEQ did for the entire time it sat in the tray
+                        // (measured 2026-07-26: 643 minutes of CPU over 14 hours).
+                        //
+                        // Reading Win32 instead of our own flags is what makes
+                        // waking up reliable: the second-launch path restores the
+                        // window from a thread with no egui context, so there is
+                        // nobody to request the repaint that would let update()
+                        // notice. Polling the real state covers every route back.
+                        if win::is_on_screen(app_hwnd) {
+                            c.request_repaint();
+                        }
                         continue;
                     }
                     let now = std::time::Instant::now();
@@ -447,9 +494,11 @@ impl App {
             let show = tray_show_id.clone();
             let quit = tray_quit_id.clone();
             let v = visible.clone();
+            let th = tray_hidden.clone();
             MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
                 if e.id == show {
                     win::show_window(app_hwnd);
+                    th.store(false, Ordering::Relaxed);
                     v.store(true, Ordering::Relaxed);
                     c.request_repaint();
                 } else if e.id == quit {
@@ -461,6 +510,7 @@ impl App {
         {
             let c = ctx.clone();
             let v = visible.clone();
+            let th = tray_hidden.clone();
             TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
                 // Double-click shows the window. Single/right clicks fall through
                 // so tray-icon can open its context menu (stealing focus here
@@ -471,6 +521,7 @@ impl App {
                 } = e
                 {
                     win::show_window(app_hwnd);
+                    th.store(false, Ordering::Relaxed);
                     v.store(true, Ordering::Relaxed);
                     c.request_repaint();
                 }
@@ -498,7 +549,10 @@ impl App {
             about_icon: None,
             _tray: tray,
             app_hwnd,
+            tray_hidden,
             visible,
+            good_size: egui::vec2(1000.0, 460.0), // matches with_inner_size
+            small_frames: 0,
             fps_frames: 0,
             fps_t0: std::time::Instant::now(),
             fps: 0.0,
@@ -527,6 +581,70 @@ impl App {
         };
         me.commit();
         Ok(me)
+    }
+
+    /// Detect and repair the window collapsing below its minimum inner size.
+    ///
+    /// Observed 2026-07-26: after a hide-to-tray round trip, `show_window`'s
+    /// SW_RESTORE brought the window back at 15x15 in the top-left corner. Win32
+    /// reported it visible, unminimized and uncloaked, so every "is anyone
+    /// looking at this" check said yes and the heartbeat held a locked 60fps
+    /// rebuilding the whole UI for a 15-pixel speck. 643 minutes of CPU over 14
+    /// hours of uptime. Ported from trontsnap, which hit the same desync first.
+    ///
+    /// Runs BEFORE the presentability gate on purpose: a window that is idling
+    /// because it is too small still has to get frames, or it could never resize
+    /// itself back and would stay broken until restarted.
+    fn heal_tiny_window(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
+            return; // reported size is meaningless while minimized
+        }
+        // Just under the 800x320 min_inner_size, so only genuine breakage trips it.
+        const MIN_W: f32 = 790.0;
+        const MIN_H: f32 = 310.0;
+        // content_rect, not the deprecated screen_rect: we want the drawable area,
+        // which on this decorations(false) window is the inner size min_inner_size
+        // constrains.
+        let sz = ctx.input(|i| i.content_rect()).size();
+        if sz.x >= MIN_W && sz.y >= MIN_H {
+            self.good_size = sz; // remember what the user actually chose
+            self.small_frames = 0;
+        } else if sz.x > 1.0 && sz.y > 1.0 {
+            // Non-degenerate but sub-minimum: confirm it persists, then fix.
+            self.small_frames += 1;
+            if self.small_frames % 4 == 0 {
+                log_line(&format!(
+                    "window desynced to {:.0}x{:.0}, restoring to {:.0}x{:.0}",
+                    sz.x, sz.y, self.good_size.x, self.good_size.y
+                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(self.good_size));
+            }
+        }
+    }
+
+    /// Whether a human could actually see this window right now.
+    ///
+    /// `visible` alone used to mean only "the close button has not hidden us",
+    /// which is why a minimized or cloaked or collapsed window still burned a
+    /// full core. Every state that means "not on screen" now lands here, and the
+    /// heartbeat thread reads the result.
+    /// Reads `tray_hidden`, never `visible`. Reading its own output was the
+    /// livelock: minimize cleared `visible`, then restore had nothing to set it
+    /// back, so the window came back on screen frozen at 2fps.
+    fn presentable(&self, ctx: &egui::Context) -> bool {
+        if self.tray_hidden.load(Ordering::Relaxed) {
+            return false;
+        }
+        if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
+            return false;
+        }
+        if win::is_cloaked(self.app_hwnd) {
+            return false; // another virtual desktop
+        }
+        // Failsafe: a window stuck below the minimum despite repeated heal
+        // attempts is not worth 60fps. heal_tiny_window still runs on the idle
+        // pulse, so it can recover on its own, just at 2fps instead of 60.
+        self.small_frames < 30
     }
 
     /// Apply the APO to the selected output on a background thread.
@@ -661,6 +779,7 @@ impl eframe::App for App {
         if self._tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             win::hide_window(self.app_hwnd);
+            self.tray_hidden.store(true, Ordering::Relaxed);
             self.visible.store(false, Ordering::Relaxed);
             log_line("hide to tray (close intercepted; process stays alive)");
         }
@@ -678,12 +797,34 @@ impl eframe::App for App {
         // our own hidden/visible bookkeeping back in sync so the UI resumes.
         if SHOW_REQUEST.swap(false, Ordering::Relaxed) {
             win::show_window(self.app_hwnd);
+            self.tray_hidden.store(false, Ordering::Relaxed);
             self.visible.store(true, Ordering::Relaxed);
             log_line("show request from a second launch");
         }
 
-        if !self.visible.load(Ordering::Relaxed) {
-            return; // the heartbeat thread keeps a 2fps pulse while tray'd
+        // Repair a collapsed window before deciding whether to render it.
+        self.heal_tiny_window(ctx);
+
+        // Fold every "nobody can see this" state into the one flag the heartbeat
+        // thread reads. This is a pure recompute from `tray_hidden` + live window
+        // state, so un-minimizing or un-cloaking restores 60fps by itself on the
+        // next idle pulse (worst case 500ms).
+        let presentable = self.presentable(ctx);
+        self.visible.store(presentable, Ordering::Relaxed);
+        if !presentable {
+            // Sleep, don't just return. When the window is on screen the GL
+            // buffer swap blocks on vsync and paces the loop for us; a window
+            // hidden with SW_HIDE has no such backpressure, so bailing out early
+            // free-runs the event loop and burns a whole core doing nothing.
+            // Measured 2026-07-26: 99% of a core while tray'd, which is most of
+            // what looked like the 15x15 bug. (Minimized windows escaped this
+            // only because winit suppresses their redraws outright.)
+            //
+            // Blocking the message pump here is safe: nothing can interact with
+            // an invisible window, and the tray handlers drive raw Win32
+            // directly, so the worst cost is up to 100ms of extra latency on a
+            // tray click.
+            return;
         }
 
         // Read APO telemetry up front: the toolbar warning chip and the bottom
