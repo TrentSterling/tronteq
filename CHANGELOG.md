@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.12.4] - 2026-07-27
+
+Two findings from an adversarial review, both in the window-state machine.
+
+- **A restore the app did not perform left the window permanently blank.**
+  `tray_hidden` was documented as "only the close button sets it, only the tray
+  handlers clear it, nothing else may touch it". That premise is false on Win32:
+  `hide_window` sets WS_EX_TOOLWINDOW and minimizes, it never clears WS_VISIBLE,
+  and WS_EX_TOOLWINDOW governs shell presentation rather than the window APIs. A
+  lingering taskbar button, an Alt-Tab entry, or any same-integrity process that
+  finds the HWND and calls `ShowWindow(SW_RESTORE)` (a window tiler, for
+  instance) restores it without running any of the three clearing sites. The
+  window was then genuinely on screen and focused while `presentable` still
+  returned false, so `update` returned before building a single widget; with
+  `decorations(false)` there is no native caption either, so the result was a
+  fully visible window containing nothing, recoverable only via the tray icon.
+  `presentable` now reconciles the latch against `is_on_screen` first: if the OS
+  says we are on screen, we are not tray'd, whatever the latch believes.
+- **`good_size` was seeded in the wrong unit space.** It is POINTS (what
+  `ViewportCommand::InnerSize` takes) but was initialised to the literal
+  `1000x460` "matching with_inner_size", which is LOGICAL pixels applied at
+  window creation. Those agree only at zoom 1.0, so with a saved zoom of 1.25 the
+  seed was 25% wrong and a heal firing before the first sane frame would resize
+  the window to a size the user never chose. It is now `Option`, learned from the
+  first sane frame and never guessed.
+
 ## [0.12.3] - 2026-07-27
 
 The window would not drag small. Reported as "min size is quite large"; it was

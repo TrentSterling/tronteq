@@ -3,7 +3,7 @@ resolver = "2"
 members = ["shared", "cli", "gui", "uitest"]
 
 [workspace.package]
-version = "0.12.3"
+version = "0.12.4"
 edition = "2021"
 authors = ["Trent Sterling"]
 license = "MIT"

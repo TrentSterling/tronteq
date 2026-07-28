@@ -231,9 +231,18 @@ struct App {
     /// cloaked, collapsed) -> slow idle repaint. Recomputed every frame by
     /// `presentable`; read by the heartbeat thread.
     visible: Arc<AtomicBool>,
-    /// Last inner size that was actually sane, to restore to when the window
+    /// Last inner size that was actually sane, in POINTS (what
+    /// `ViewportCommand::InnerSize` takes), to restore to when the window
     /// desyncs. See `heal_tiny_window`.
-    good_size: egui::Vec2,
+    ///
+    /// `None` until a sane frame has actually been observed. It used to be
+    /// seeded with the literal `vec2(1000.0, 460.0)` "matching with_inner_size",
+    /// but `with_inner_size` is LOGICAL pixels applied at window creation while
+    /// this is POINTS, and those only agree at zoom 1.0. With a saved zoom of
+    /// 1.25 the seed was 25% wrong, so a heal firing before the first sane frame
+    /// would resize the window to a size the user never chose. Refusing to guess
+    /// is simpler than converting.
+    good_size: Option<egui::Vec2>,
     /// Consecutive frames observed below the minimum inner size.
     small_frames: u32,
     fps_frames: u32,
@@ -561,7 +570,7 @@ impl App {
             app_hwnd,
             tray_hidden,
             visible,
-            good_size: egui::vec2(1000.0, 460.0), // matches with_inner_size
+            good_size: None, // learned from the first sane frame; never guessed
             small_frames: 0,
             fps_frames: 0,
             fps_t0: std::time::Instant::now(),
@@ -634,17 +643,19 @@ impl App {
         let min_h = MIN_INNER_H - 10.0;
         if logical.x >= min_w && logical.y >= min_h {
             // Stored in POINTS, because ViewportCommand::InnerSize takes points.
-            self.good_size = sz;
+            self.good_size = Some(sz);
             self.small_frames = 0;
-        } else if sz.x > 1.0 && sz.y > 1.0 {
+        } else if sz.x > 1.0 && sz.y > 1.0 && self.good_size.is_some() {
             // Non-degenerate but sub-minimum: confirm it persists, then fix.
             self.small_frames += 1;
             if self.small_frames % 4 == 0 {
-                log_line(&format!(
-                    "window desynced to {:.0}x{:.0}, restoring to {:.0}x{:.0}",
-                    sz.x, sz.y, self.good_size.x, self.good_size.y
-                ));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(self.good_size));
+                if let Some(good) = self.good_size {
+                    log_line(&format!(
+                        "window desynced to {:.0}x{:.0}, restoring to {:.0}x{:.0}",
+                        sz.x, sz.y, good.x, good.y
+                    ));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(good));
+                }
             }
         }
     }
@@ -659,8 +670,36 @@ impl App {
     /// livelock: minimize cleared `visible`, then restore had nothing to set it
     /// back, so the window came back on screen frozen at 2fps.
     fn presentable(&self, ctx: &egui::Context) -> bool {
+        // RECONCILE THE LATCH WITH REALITY FIRST.
+        //
+        // `tray_hidden` was documented as "only the close button sets it, only
+        // the tray Show/DoubleClick handlers and a second launch clear it,
+        // nothing else may touch it". That premise is false on Win32.
+        // `hide_window` only sets WS_EX_TOOLWINDOW and minimizes; it never
+        // clears WS_VISIBLE, and WS_EX_TOOLWINDOW governs shell presentation,
+        // not the window APIs. Any same-integrity process that finds the HWND
+        // (EnumWindows, FindWindow) can call ShowWindow(SW_RESTORE) on it, and
+        // Trent's own window tilers are exactly that class of tool. A lingering
+        // taskbar button or an Alt-Tab entry does it too.
+        //
+        // When that happened, none of the three clearing sites ran, so the
+        // window sat genuinely on screen and focused while `presentable` still
+        // returned false, and `update` returned before building a single
+        // widget. With decorations(false) there is no native caption either, so
+        // the result was a fully visible, permanently blank window with nothing
+        // in it to click. The heartbeat kept pulsing forever because
+        // `is_on_screen` correctly said true. Only the tray icon could recover
+        // it, which is easy to miss when the window looks open.
+        //
+        // So: if the OS says we are on screen, we are not tray'd, whatever the
+        // latch believes. This covers every restore route rather than the three
+        // the app knows how to perform itself.
         if self.tray_hidden.load(Ordering::Relaxed) {
-            return false;
+            if win::is_on_screen(self.app_hwnd) {
+                self.tray_hidden.store(false, Ordering::Relaxed);
+            } else {
+                return false;
+            }
         }
         if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
             return false;
