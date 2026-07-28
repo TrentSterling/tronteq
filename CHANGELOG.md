@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.3] - 2026-07-27
+
+The window would not drag small. Reported as "min size is quite large"; it was
+two things, and the second was a failsafe fighting the user.
+
+- **`min_inner_size` lowered from 800x320 to 640x300** (logical px), now via
+  named `MIN_INNER_W` / `MIN_INNER_H` constants so the OS floor and the
+  collapsed-window failsafe cannot drift apart again.
+- **`heal_tiny_window` was comparing the wrong units.** `content_rect()` is in
+  egui POINTS (physical / (dpi_scale * zoom_factor)); `min_inner_size` is applied
+  once at creation in LOGICAL pixels (physical / dpi_scale) and never re-applied
+  when zoom changes. They agree only at zoom 1.0. At 110% DPI with a saved zoom
+  of 1.1 the OS allowed an 880px window, which reads as 727 points, which the
+  hardcoded 790 threshold called "desynced" and snapped back. The failsafe was
+  contesting a ~76px band the OS had already permitted, and because `good_size`
+  is stored in points it snapped BIGGER the further you zoomed in. It now
+  converts points to logical via `zoom_factor()` before comparing, so the two
+  agree at any zoom.
+
 ## [0.12.2] - 2026-07-26
 
 TrontEQ was burning a full CPU core around the clock. Reported as "why is this

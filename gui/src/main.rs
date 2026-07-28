@@ -113,6 +113,16 @@ fn tid() -> u32 {
     unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
 }
 
+/// Smallest window the OS will let you drag to, in LOGICAL pixels (what
+/// `min_inner_size` speaks). Lowered from 800x320 on 2026-07-27: the EQ curve
+/// and the inspector both survive a much smaller window than that, and the old
+/// floor made TrontEQ awkward to park in a corner.
+///
+/// `heal_tiny_window` derives its own thresholds from these, so the failsafe and
+/// the OS floor can never disagree again. See the note there.
+const MIN_INNER_W: f32 = 640.0;
+const MIN_INNER_H: f32 = 300.0;
+
 fn main() -> Result<()> {
     install_crash_logger();
     log_line(&format!("start pid={} main tid={}", std::process::id(), tid()));
@@ -152,7 +162,7 @@ fn main() -> Result<()> {
         // caption buttons, dragging, and edge-resize the OS border used to give us).
         .with_decorations(false)
         .with_inner_size([1000.0, 460.0])
-        .with_min_inner_size([800.0, 320.0]);
+        .with_min_inner_size([MIN_INNER_W, MIN_INNER_H]);
     // Window + taskbar icon = Trent's face (the tront.xyz favicon).
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -599,15 +609,32 @@ impl App {
         if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
             return; // reported size is meaningless while minimized
         }
-        // Just under the 800x320 min_inner_size, so only genuine breakage trips it.
-        const MIN_W: f32 = 790.0;
-        const MIN_H: f32 = 310.0;
-        // content_rect, not the deprecated screen_rect: we want the drawable area,
-        // which on this decorations(false) window is the inner size min_inner_size
-        // constrains.
+        // UNITS MATTER HERE, and getting them wrong is what made the window
+        // refuse to be dragged small (reported 2026-07-27).
+        //
+        // `content_rect()` is in egui POINTS: physical pixels divided by
+        // (native DPI scale x zoom_factor). `min_inner_size` is applied once at
+        // window creation in LOGICAL pixels, i.e. physical divided by the DPI
+        // scale alone, and is never re-applied when zoom changes. The two only
+        // agree at zoom 1.0.
+        //
+        // At 110% DPI with a saved zoom of 1.1, the OS happily allows an 880px
+        // window, but that reads as 727 points, which the old hardcoded 790
+        // threshold called "desynced" and snapped back. The failsafe was fighting
+        // the user for a ~76px band the OS had already allowed, and because
+        // `good_size` is in points it snapped BIGGER the further you zoomed in.
+        //
+        // Converting points -> logical with zoom_factor puts the comparison in
+        // the same space `min_inner_size` constrains, so the failsafe now trips
+        // only below what the OS itself permits, at any zoom.
         let sz = ctx.input(|i| i.content_rect()).size();
-        if sz.x >= MIN_W && sz.y >= MIN_H {
-            self.good_size = sz; // remember what the user actually chose
+        let logical = sz * ctx.zoom_factor();
+        // A hair under the real floor, so only genuine breakage trips it.
+        let min_w = MIN_INNER_W - 10.0;
+        let min_h = MIN_INNER_H - 10.0;
+        if logical.x >= min_w && logical.y >= min_h {
+            // Stored in POINTS, because ViewportCommand::InnerSize takes points.
+            self.good_size = sz;
             self.small_frames = 0;
         } else if sz.x > 1.0 && sz.y > 1.0 {
             // Non-degenerate but sub-minimum: confirm it persists, then fix.
