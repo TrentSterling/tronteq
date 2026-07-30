@@ -46,7 +46,12 @@ pub struct Visualizer {
 }
 
 impl Visualizer {
-    pub fn start() -> Self {
+    /// `paused` is owned by the app (the tray hide/show sites flip it). While it
+    /// is set, no loopback session exists at all: the capture client is released
+    /// rather than merely ignored, so a tray'd TrontEQ holds no WASAPI client and
+    /// wakes only to read this flag. Nothing consumes the spectrum while the
+    /// window is off screen, so every sample captured there was waste.
+    pub fn start(paused: Arc<AtomicBool>) -> Self {
         let samples = Arc::new(Mutex::new(vec![0.0f32; RING]));
         let spectrum = Arc::new(Mutex::new(vec![0.0f32; NUM_BARS]));
         let level = Arc::new(Mutex::new((0.0f32, 0.0f32)));
@@ -59,7 +64,7 @@ impl Visualizer {
         let stop2 = stop.clone();
         let handle = std::thread::spawn(move || unsafe {
             crate::log_line(&format!("thread: viz-capture tid={}", crate::tid()));
-            let _ = capture_loop(&s2, &sp2, &lv2, &stx, &stop2);
+            let _ = capture_loop(&s2, &sp2, &lv2, &stx, &stop2, &paused);
         });
         Visualizer { samples, spectrum, level, stereo, stop, handle: Some(handle) }
     }
@@ -192,10 +197,26 @@ unsafe fn capture_loop(
     level: &Arc<Mutex<(f32, f32)>>,
     stereo: &Arc<Mutex<Vec<[f32; 2]>>>,
     stop: &Arc<AtomicBool>,
+    paused: &Arc<AtomicBool>,
 ) -> windows::core::Result<()> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    let mut logged_pause = false;
     while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = run_session(samples, spectrum, level, stereo, stop) {
+        // Tray'd: hold no session and no capture client, just tick on the flag.
+        // 100ms is well under any perceptible delay on the way back and costs
+        // nothing (10 atomic loads a second in a sleeping thread).
+        if paused.load(Ordering::Relaxed) {
+            if !logged_pause {
+                logged_pause = true;
+                crate::log_line("viz: paused (tray'd) - loopback session released");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        if std::mem::take(&mut logged_pause) {
+            crate::log_line("viz: resumed - re-acquiring loopback session");
+        }
+        if let Err(e) = run_session(samples, spectrum, level, stereo, stop, paused) {
             crate::log_line(&format!("viz: capture session ended with error: {e:?}"));
         }
         // Session ended (error or stop). Flatten the viz so it doesn't show stale
@@ -212,6 +233,12 @@ unsafe fn capture_loop(
         if stop.load(Ordering::Relaxed) {
             break;
         }
+        // The 500ms breather is for a FAILED session (device invalidated, format
+        // change): don't hammer the enumerator. A session that ended because we
+        // were tray'd is not a failure, and the pause tick above is the wait.
+        if paused.load(Ordering::Relaxed) {
+            continue;
+        }
         std::thread::sleep(Duration::from_millis(500));
     }
     CoUninitialize();
@@ -226,6 +253,7 @@ unsafe fn run_session(
     level: &Arc<Mutex<(f32, f32)>>,
     stereo: &Arc<Mutex<Vec<[f32; 2]>>>,
     stop: &Arc<AtomicBool>,
+    paused: &Arc<AtomicBool>,
 ) -> windows::core::Result<()> {
     let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
     let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
@@ -294,6 +322,13 @@ unsafe fn run_session(
 
     let mut last_default_poll = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        // Tray'd mid-session: tear the session down here rather than idling with
+        // a live client. Dropping out through the normal end-of-session path also
+        // flattens the bars/levels, so nothing stale is on screen when it returns.
+        if paused.load(Ordering::Relaxed) {
+            let _ = client.Stop();
+            return Ok(());
+        }
         // A default-device SWAP between two still-enabled endpoints does NOT
         // invalidate a loopback client bound to the old endpoint — it just goes
         // silent (zero/silent packets, NO error), so the error-driven re-acquire in

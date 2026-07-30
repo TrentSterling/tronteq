@@ -227,6 +227,10 @@ struct App {
     /// DoubleClick handlers and a second launch clear it. A tray'd window gets
     /// no OS events, so nothing may infer this one.
     tray_hidden: Arc<AtomicBool>,
+    /// Mirrors `tray_hidden` for the visualizer's capture thread: while set, the
+    /// WASAPI loopback session is released, so a tray'd TrontEQ captures no audio
+    /// and runs no FFT. Set/cleared at the same sites as `tray_hidden`.
+    viz_paused: Arc<AtomicBool>,
     /// DERIVED: false whenever nobody can see the window (tray'd, minimized,
     /// cloaked, collapsed) -> slow idle repaint. Recomputed every frame by
     /// `presentable`; read by the heartbeat thread.
@@ -447,6 +451,12 @@ impl App {
         let tray_hidden = Arc::new(AtomicBool::new(false));
         let visible = Arc::new(AtomicBool::new(true));
 
+        // Tracks `tray_hidden`, but owned separately because the visualizer thread
+        // must read it from outside egui: while tray'd the loopback capture session
+        // is released entirely, so the process holds no WASAPI client and does no
+        // FFT for a window nobody can see. Set at the same four sites.
+        let viz_paused = Arc::new(AtomicBool::new(false));
+
         // Repaint heartbeat thread (Boxel pattern): winit DEFERS
         // request_repaint_after deadlines so pacing from update() drifts; a
         // repaint request from another thread is delivered immediately.
@@ -514,11 +524,13 @@ impl App {
             let quit = tray_quit_id.clone();
             let v = visible.clone();
             let th = tray_hidden.clone();
+            let vp = viz_paused.clone();
             MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
                 if e.id == show {
                     win::show_window(app_hwnd);
                     th.store(false, Ordering::Relaxed);
                     v.store(true, Ordering::Relaxed);
+                    vp.store(false, Ordering::Relaxed);
                     c.request_repaint();
                 } else if e.id == quit {
                     log_line("exit: tray Quit -> process::exit(0)");
@@ -530,6 +542,7 @@ impl App {
             let c = ctx.clone();
             let v = visible.clone();
             let th = tray_hidden.clone();
+            let vp = viz_paused.clone();
             TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
                 // Double-click shows the window. Single/right clicks fall through
                 // so tray-icon can open its context menu (stealing focus here
@@ -542,6 +555,7 @@ impl App {
                     win::show_window(app_hwnd);
                     th.store(false, Ordering::Relaxed);
                     v.store(true, Ordering::Relaxed);
+                    vp.store(false, Ordering::Relaxed);
                     c.request_repaint();
                 }
             }));
@@ -559,7 +573,7 @@ impl App {
             delay_ms,
             show_about: false,
             rainbow: ui_settings.rainbow,
-            viz: visualizer::Visualizer::start(),
+            viz: visualizer::Visualizer::start(viz_paused.clone()),
             layers: ui_settings.layers,
             spec_peaks: Vec::new(),
             loud_hist: Vec::new(),
@@ -569,6 +583,7 @@ impl App {
             _tray: tray,
             app_hwnd,
             tray_hidden,
+            viz_paused,
             visible,
             good_size: None, // learned from the first sane frame; never guessed
             small_frames: 0,
@@ -697,6 +712,10 @@ impl App {
         if self.tray_hidden.load(Ordering::Relaxed) {
             if win::is_on_screen(self.app_hwnd) {
                 self.tray_hidden.store(false, Ordering::Relaxed);
+                // Whatever route brought us back, the capture has to come back
+                // with us, or the window returns with a permanently dead
+                // spectrum, waveform and meters.
+                self.viz_paused.store(false, Ordering::Relaxed);
             } else {
                 return false;
             }
@@ -844,9 +863,10 @@ impl eframe::App for App {
         // Only if a tray exists, else we'd trap the window with no way back.
         if self._tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            win::hide_window(self.app_hwnd);
             self.tray_hidden.store(true, Ordering::Relaxed);
             self.visible.store(false, Ordering::Relaxed);
+            self.viz_paused.store(true, Ordering::Relaxed);
+            win::hide_window(self.app_hwnd);
             log_line("hide to tray (close intercepted; process stays alive)");
         }
 
@@ -865,6 +885,7 @@ impl eframe::App for App {
             win::show_window(self.app_hwnd);
             self.tray_hidden.store(false, Ordering::Relaxed);
             self.visible.store(true, Ordering::Relaxed);
+            self.viz_paused.store(false, Ordering::Relaxed);
             log_line("show request from a second launch");
         }
 

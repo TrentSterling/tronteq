@@ -1,24 +1,55 @@
 //! Raw Win32 window helpers. eframe's `ViewportCommand::Visible` can't restore a
 //! hidden window, so the tray hide/show path drives `ShowWindow` on the HWND
 //! directly. Pattern proven in trontclicker / powershellmanager.
+//!
+//! THE TRAY STATE IS: minimized, taskbar button removed via `ITaskbarList`,
+//! ex-styles untouched. Every clause there was paid for; see `hide_window` for
+//! what each alternative leaks.
 
-/// Add or remove WS_EX_TOOLWINDOW, which is what keeps a window out of the
-/// taskbar and out of alt-tab.
-unsafe fn set_toolwindow(hwnd: isize, on: bool) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+/// Add or remove this window's taskbar button through the shell's own API.
+///
+/// This is the only way to take a still-visible window out of the taskbar that
+/// does not fight Explorer. Doing it with styles (set WS_EX_TOOLWINDOW, clear
+/// WS_EX_APPWINDOW) loses twice over:
+///
+/// * Explorer caches its taskbar decision and re-reads the ex-style only across
+///   show/hide transitions, so a window that has been activated and then
+///   minimized keeps a stale, GLOWING phantom button. It looks exactly like the
+///   bug you were trying to fix.
+/// * WS_EX_TOOLWINDOW also takes the window out of shell management, and a
+///   minimized window the shell does not manage never gets parked at
+///   (-32000,-32000). Its legacy iconic stub stays in the work area instead: a
+///   black 237x39 rectangle sitting above the taskbar, black because
+///   `decorations(false)` means there is no caption to paint into it.
+///
+/// COM: the main thread has an apartment (winit calls OleInitialize on the event
+/// loop thread) but `show_window` is also reachable from the show-acceptor
+/// thread, which has none. Initialize defensively, uninitialize only if this call
+/// is what initialized.
+fn taskbar_tab(hwnd: isize, present: bool) {
+    use windows::Win32::Foundation::{HWND, S_OK};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
     };
-    let h = HWND(hwnd as *mut _);
-    let cur = GetWindowLongPtrW(h, GWL_EXSTYLE);
-    let bit = WS_EX_TOOLWINDOW.0 as isize;
-    let next = if on { cur | bit } else { cur & !bit };
-    if next != cur {
-        SetWindowLongPtrW(h, GWL_EXSTYLE, next);
+    use windows::Win32::UI::Shell::{ITaskbarList, TaskbarList};
+    unsafe {
+        let we_init = CoInitializeEx(None, COINIT_APARTMENTTHREADED) == S_OK;
+        if let Ok(list) = CoCreateInstance::<_, ITaskbarList>(&TaskbarList, None, CLSCTX_ALL) {
+            if list.HrInit().is_ok() {
+                let h = HWND(hwnd as *mut _);
+                let _ = if present { list.AddTab(h) } else { list.DeleteTab(h) };
+            }
+        }
+        if we_init {
+            CoUninitialize();
+        }
     }
 }
 
-/// Restore + show + focus the window.
+/// Put the taskbar button back, then restore + show + focus the window.
+///
+/// SW_RESTORE before SW_SHOW so this works from either parked state, including a
+/// window that was hidden while already minimized.
 pub fn show_window(hwnd: isize) {
     if hwnd == 0 {
         return;
@@ -27,9 +58,9 @@ pub fn show_window(hwnd: isize) {
     use windows::Win32::UI::WindowsAndMessaging::{
         SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
     };
+    taskbar_tab(hwnd, true);
     unsafe {
         let h = HWND(hwnd as *mut _);
-        set_toolwindow(hwnd, false); // taskbar button comes back
         let _ = ShowWindow(h, SW_RESTORE);
         let _ = ShowWindow(h, SW_SHOW);
         let _ = SetForegroundWindow(h);
@@ -81,23 +112,37 @@ pub fn is_cloaked(hwnd: isize) -> bool {
     }
 }
 
-/// Drop to the tray: minimized, with no taskbar button and no alt-tab entry.
+/// Drop to the tray: minimize, then take the taskbar button away.
 ///
-/// DELIBERATELY NOT SW_HIDE, which is what this used to do and what cost a full
-/// CPU core around the clock (measured 2026-07-26: 643 minutes of CPU over 14.7
-/// hours of uptime, 98.6% of it on the main thread, none of it on the audio
-/// capture). winit never delivers a redraw to a hidden window, and an
-/// outstanding repaint request keeps its event loop in Poll instead of Wait, so
-/// the loop spun forever on a request that could never be serviced. Hiding via
-/// winit's own `ViewportCommand::Visible(false)` behaves identically, and so
-/// does SW_MINIMIZE followed by SW_HIDE — both were measured at ~98%.
+/// Four parked states were built and measured on 2026-07-29/30. Only this one
+/// gets all three properties (idle, no taskbar button, nothing left on screen):
 ///
-/// Minimized is the one state where winit genuinely idles (~0%), so that is the
-/// state we park in. WS_EX_TOOLWINDOW is what makes a minimized window read as
-/// tray'd: it is excluded from both the taskbar and alt-tab. The style is set
-/// while the window is still on screen so the shell notices the change.
+/// | parked state | idle? | taskbar button | on-screen artifact |
+/// |---|---|---|---|
+/// | `SW_HIDE` | **NO: 101% of one core, forever** | gone | none |
+/// | `SW_MINIMIZE` | yes (~0%) | **stays** | none: the shell parks it at (-32000,-32000) |
+/// | `SW_MINIMIZE` + TOOLWINDOW (+/- clearing APPWINDOW) | yes | **stale glowing phantom** | **black 237x39 stub above the taskbar** |
+/// | **`SW_MINIMIZE` + `ITaskbarList::DeleteTab`** | **yes** | **gone** | **none** |
 ///
-/// `show_window` clears the style before restoring, so the round trip unwinds.
+/// WHY NOT SW_HIDE, since it is the obvious answer: winit never delivers a
+/// redraw to a hidden window, and an unretired immediate repaint request keeps
+/// its event loop in Poll instead of Wait. So one queued repaint pins the main
+/// thread at a full core for as long as the app sits in the tray. That is the
+/// 0.12.2 bug (643 minutes of CPU over 14.7 hours tray'd). Latching the tray
+/// state first, silencing the heartbeat, and hiding only after two
+/// deadline-driven frames had retired everything queued was tried on 2026-07-30
+/// and still measured 100% of a core: the hide ITSELF gets eframe to queue a
+/// repaint, so no amount of pre-hide quiet can win. A minimized window still
+/// gets `update()` called, which is what retires the request and lets the loop
+/// reach Wait, so minimized genuinely idles.
+///
+/// Do not "improve" this by reaching for WS_EX_TOOLWINDOW. It is what produced
+/// both the phantom button and the black stub; see `taskbar_tab`.
+///
+/// Known trade-off: a minimized window is still an Alt-Tab entry, and DeleteTab
+/// does not change that (only TOOLWINDOW would, at the cost of the two bugs
+/// above). Alt-tabbing to a tray'd TrontEQ restores it, which `presentable`
+/// reconciles correctly, so the app recovers rather than showing blank.
 pub fn hide_window(hwnd: isize) {
     if hwnd == 0 {
         return;
@@ -105,7 +150,9 @@ pub fn hide_window(hwnd: isize) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MINIMIZE};
     unsafe {
-        set_toolwindow(hwnd, true); // no taskbar button, no alt-tab entry
+        // Minimize FIRST: this is what makes the shell park the window
+        // off-screen, so there is no iconic stub to look at afterwards.
         let _ = ShowWindow(HWND(hwnd as *mut _), SW_MINIMIZE);
     }
+    taskbar_tab(hwnd, false);
 }

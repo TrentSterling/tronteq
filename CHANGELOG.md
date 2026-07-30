@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.12.5] - 2026-07-30
+
+- **Close hides to the tray again: no taskbar button, nothing left on screen, and
+  0% CPU.** 0.12.2 moved the tray state from `SW_HIDE` to MINIMIZED +
+  `WS_EX_TOOLWINDOW` to stop a CPU core burning, and two artifacts came with it.
+  The taskbar button survived, so close behaved exactly like minimize (it even
+  kept the glowing active underline), and a **black 237x39 rectangle** sat on the
+  desktop above the taskbar. The rectangle was the window itself: TOOLWINDOW
+  takes a window out of shell management, and a minimized window the shell does
+  not manage never gets parked at (-32000,-32000), so its legacy iconic stub
+  stays in the work area, painted black because `decorations(false)` leaves no
+  caption in it. The button survived because winit stamps `WS_EX_APPWINDOW` on
+  every window it creates (`WindowFlags::ON_TASKBAR`, on by default) and APPWINDOW
+  outranks TOOLWINDOW for any *visible* window, which a minimized window still is.
+  Four parked states were built and measured before one satisfied all three
+  requirements:
+
+  | parked state | idle | taskbar button | on-screen artifact |
+  |---|---|---|---|
+  | `SW_HIDE` | no: 101% of one core, forever | gone | none |
+  | `SW_MINIMIZE` | yes | stays | none (shell parks it at -32000) |
+  | `SW_MINIMIZE` + TOOLWINDOW, with or without clearing APPWINDOW | yes | stale glowing phantom | black 237x39 stub |
+  | **`SW_MINIMIZE` + `ITaskbarList::DeleteTab`** | **yes, 0%** | **gone** | **none** |
+
+  `SW_HIDE` looks like the right answer and is not: winit never delivers a redraw
+  to a hidden window, and an unretired immediate repaint request keeps its event
+  loop in Poll instead of Wait, so one queued repaint pins the main thread at a
+  full core for as long as the app is tray'd. That is the 0.12.2 bug (643 minutes
+  of CPU over 14.7 hours). Latching the tray state first, silencing the heartbeat
+  and hiding only after two deadline-driven frames had retired everything queued
+  was built and measured too: still 100% of a core, because the hide itself gets
+  eframe to queue a repaint. A minimized window still gets `update()` called,
+  which retires the request and lets the loop reach Wait, so minimized is the
+  state that genuinely idles. The taskbar button now goes through the shell's own
+  `ITaskbarList::DeleteTab` / `AddTab`, so no ex-style is touched at all. Known
+  trade-off: a tray'd TrontEQ is still an Alt-Tab entry, and alt-tabbing to it
+  restores it (which `presentable` reconciles, so it comes back live rather than
+  blank).
+- **Tray'd now means idle, not merely quiet.** The remaining cost was the WASAPI
+  loopback capture still pulling the output mix and running a 2048-point FFT to
+  feed a spectrum, waveform, goniometer and meters that nothing was reading.
+  Hiding to the tray now releases the loopback session outright (`viz_paused`,
+  set at the same four sites as `tray_hidden`), so a tray'd TrontEQ holds no
+  audio client and wakes 10x a second to read one atomic. Showing re-acquires the
+  session through the same path a default-device change already used, and
+  `presentable`'s self-heal clears the pause too, so a window restored by any
+  route (window tiler, second launch) never comes back with a dead spectrum. The
+  EQ is untouched either way: that runs in the APO inside audiodg, not here.
+  Measured tray'd after both fixes: **0.0% CPU across 15 consecutive one-second
+  samples**, with the window confirmed off screen for every one of them.
+
 ## [0.12.4] - 2026-07-27
 
 Two findings from an adversarial review, both in the window-state machine.
