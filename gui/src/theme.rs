@@ -203,7 +203,14 @@ impl Palette {
         {
             let h = color::rgb_to_hsl(prim);
             let l = if dark { (h.l + 6.0).min(92.0) } else { (h.l - 6.0).max(8.0) };
-            prim = color::hsl_to_rgb(h.h, h.s.max(45.0), l);
+            // HUE AND SATURATION ARE INTENT; only lightness may move. This was
+            // `h.s.max(45.0)`, meant to stop a brightened accent washing out to
+            // gray, but `rgb_to_hsl` reports hue 0 for EVERY achromatic colour,
+            // so the floor read that placeholder zero as "red": picking pure
+            // black handed back a dark RED accent. Walking lightness already
+            // preserves saturation by construction, so the floor only ever
+            // ADDED saturation nobody asked for.
+            prim = color::hsl_to_rgb(h.h, h.s, l);
             guard += 1;
         }
 
@@ -433,7 +440,30 @@ pub fn set_gradient(ctx: &egui::Context, on: bool) {
 }
 
 /// Swap the live palette and re-apply egui visuals.
+///
+/// RECORDING THE SEED IS PART OF APPLYING A PALETTE, not a side effect of one
+/// constructor. `set_accent_seed` used to be called ONLY from `from_accent`, so
+/// every other way of choosing a theme (the three hand-written built-ins, and
+/// `from_colors`, which backs both the premades and Random) left ACCENT_SEED
+/// holding the PREVIOUS pick, or its #56CCFF default if nothing had been picked
+/// yet. Since the gradient's peg 0 and the peg picker both read the seed, that
+/// showed up as: choose "Paper", and slot 0 is still teal.
+///
+/// Which value is the intent depends on where the palette came from, and
+/// `source` already encodes that (it is what `resolve` keys off): exactly one
+/// stored hex means it came from a raw pick via `from_accent`, and THAT hex is
+/// the intent, not the enforced accent derived from it. Anything else, a
+/// built-in with no source or a palette derived from a colour list, has its own
+/// accent as the intent.
 pub fn set_palette(ctx: &egui::Context, p: Palette) {
+    let seed = if p.source.len() == 1 {
+        color::hex_to_rgb(&p.source[0])
+    } else {
+        None
+    }
+    .unwrap_or_else(|| rgb_of(p.accent));
+    set_accent_seed(seed);
+
     *CURRENT.write().unwrap() = p.enforce_readability();
     ctx.set_visuals(build_visuals());
 }

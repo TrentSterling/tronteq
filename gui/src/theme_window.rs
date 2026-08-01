@@ -424,8 +424,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         // SLOT 0 IS THE ACCENT (linked): editing it rethemes
                         // the app; it always participates in the ramp.
                         // Slots 1..N are free pegs.
-                        let acc = theme::cyan();
-                        let mut rgb = [acc.r(), acc.g(), acc.b()];
+                        // READ THE SEED, NOT THE INK. `theme::cyan()` is the
+                        // ENFORCED accessor (already walked for readability
+                        // against the panel), which is precisely what the rule
+                        // on ACCENT_SEED forbids binding a picker to. The
+                        // renderer pushes `accent_seed()` as peg 0, so painting
+                        // this swatch from `cyan()` made the swatch and the
+                        // actual ramp disagree by construction.
+                        let acc = theme::accent_seed();
+                        let mut rgb = acc;
                         if ui
                             .color_edit_button_srgb(&mut rgb)
                             .on_hover_text("Slot 1 = your theme accent (linked)")

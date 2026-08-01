@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.12.6] - 2026-08-01
+
+Three theme bugs, all the same shape: something displayed a different value than
+the thing it claimed to represent.
+
+- **Gradient peg 0 showed the wrong colour.** Pick "Paper" and slot 1 sat there
+  teal. The swatch painted `theme::cyan()`, the ENFORCED ink accessor (already
+  walked for readability against the panel), while the renderer pushes
+  `accent_seed()` as peg 0. Two different values by construction. This is
+  exactly the rule `ACCENT_SEED` was introduced to enforce ("the picker binds to
+  intent, never to the processed result"); the fix landed on the main accent
+  picker and missed the peg picker.
+- **Choosing any theme that wasn't a raw colour pick left the seed stale.**
+  `set_accent_seed` was called only from `Palette::from_accent`, so the three
+  hand-written built-ins and `from_colors` (which backs both the premades and
+  Random) never recorded one. The gradient's peg 0 and the peg picker both read
+  the seed, so they kept showing the PREVIOUS pick, or the `#56CCFF` default if
+  nothing had been picked yet. Recording it now happens in `set_palette`, the
+  one choke point every palette flows through, keyed off `source` the same way
+  `resolve` already keys off it: exactly one stored hex means a raw pick and
+  that hex is the intent, anything else uses the palette's own accent.
+- **Picking pure black gave you a dark red accent.** The contrast walk floored
+  saturation with `h.s.max(45.0)` so a brightened accent wouldn't wash out to
+  gray, but `rgb_to_hsl` reports hue 0 for EVERY achromatic colour, so the floor
+  read that placeholder zero as "red" and invented a hue nobody chose. Walking
+  lightness already preserves saturation by construction, so the floor only ever
+  ADDED saturation.
+
 ## [0.12.5] - 2026-07-30
 
 - **Close hides to the tray again: no taskbar button, nothing left on screen, and
