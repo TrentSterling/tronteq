@@ -319,43 +319,41 @@ impl Palette {
         Palette::premade(name).unwrap_or_else(Palette::electric_cyan)
     }
 
-    /// "Your accent color on the standard ground" (colormagic single-accent
-    /// path, ported from SpaceView's `theme::from_accent`): unlike
-    /// `from_colors` (which needs a full list and infers dark/light from it),
-    /// this takes ONE accent + an explicit mode, so the big inline color
-    /// picker + gradient-preset-sync can retheme without fighting the
-    /// current dark/light choice.
+    /// "Your accent color on the standard ground" (AUTO AWESOME, ported from
+    /// TrontSnap's `theme::from_accent`/`auto_theme` 2026-09-16, itself from
+    /// SpaceView): unlike `from_colors` (which needs a full list and infers
+    /// dark/light from it), this takes ONE accent + an explicit mode, so the
+    /// big inline color picker + gradient-preset-sync can retheme without
+    /// fighting the current dark/light choice.
+    ///
+    /// SEED OWNS THE CHROME: every ground and text tone is a step on
+    /// `color::scale_from_seed`, so picking a color re-tints the whole panel
+    /// stack with an APCA guarantee, in either mode, for any seed - including
+    /// achromatic ones. That replaces the old hand-tuned HSL bands (separate
+    /// magic numbers per mode) and their `satf` saturation fudge: the ladder
+    /// already tints grounds from the seed's own OKLCH chroma and caps ground
+    /// chroma absolutely (`C_GROUND_CEIL`), so a gray or black pick goes
+    /// neutral for free, no fudge factor required.
     pub fn from_accent(accent: Rgb, dark: bool) -> Palette {
         // Record intent at the one point a raw pick enters the theme, so the
         // picker and the gradient can read back exactly what was chosen rather
         // than the readability-corrected version of it.
         set_accent_seed(accent);
-        // DISCORD GROUND PARITY: the ground takes the accent's hue at low
-        // saturation, scaled by the pick's own saturation so a gray/black
-        // accent yields a neutral ground instead of being forced colorful.
-        let a = color::rgb_to_hsl(accent);
-        let hue = a.h;
-        let satf = (a.s / 50.0).clamp(0.0, 1.0);
-        let (bg, panel, text, muted) = if dark {
-            (
-                color::hsl_to_rgb(hue, 24.0 * satf, 7.0),
-                color::hsl_to_rgb(hue, 22.0 * satf, 11.0),
-                color::hsl_to_rgb(hue, 18.0 * satf, 92.0),
-                color::hsl_to_rgb(hue, 12.0 * satf, 62.0),
-            )
-        } else {
-            // Light grounds must commit to the hue: at 94-98 lightness no
-            // color survives, so pull lightness down + saturation up until
-            // the tint actually reads.
-            (
-                color::hsl_to_rgb(hue, 48.0 * satf, 86.0),
-                color::hsl_to_rgb(hue, 42.0 * satf, 92.0),
-                color::hsl_to_rgb(hue, 35.0 * satf, 13.0),
-                color::hsl_to_rgb(hue, 18.0 * satf, 38.0),
-            )
-        };
-        let panel2 =
-            color::mix_colors(panel, if dark { [255, 255, 255] } else { [0, 0, 0] }, 0.07);
+
+        let sc = color::scale_from_seed(accent, dark);
+        // THE ORDERING INVERTS BY MODE. On dark the app background is the
+        // darkest thing and the panel lifts off it; on light the panel is the
+        // brightest "paper" and the background is a step behind it. Reusing
+        // the dark indices in light mode would bury a bright panel under an
+        // even brighter page and depth would read backwards.
+        let (bg, panel) = if dark { (sc.step(1), sc.step(2)) } else { (sc.step(2), sc.step(1)) };
+        // The inset surface knob captions sit on - step 3 in both modes, which
+        // the ladder's own text/muted guarantee already covers (checked against
+        // steps 2 and 5, and step 3 sits between them on both tables).
+        let panel2 = sc.step(3);
+        let text = sc.step(12);
+        let muted = sc.step(11);
+
         // Canvas sits a step deeper than the chrome on dark themes, a step
         // brighter on light ones - same convention as `from_colors`.
         let canvas_bg = if dark {
@@ -1031,4 +1029,116 @@ pub fn ramp_sample_frosted(t: f32) -> Color32 {
     let f = frost(p.dark);
     let alpha = if p.dark { f } else { f * (200.0 / 255.0) };
     c32(color::mix_colors(rgb_of(wash), rgb_of(p.panel), alpha))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A spread that covers the cases that actually broke elsewhere: pure
+    /// primaries, the achromatic extremes, a bright hue whose cusp is far
+    /// from the ladder's solid step (yellow), and a muted near-gray.
+    const SEEDS: [Rgb; 9] = [
+        [255, 0, 0],
+        [0, 0, 0],
+        [255, 255, 255],
+        [128, 128, 128],
+        [255, 255, 0],
+        [0, 224, 255],
+        [18, 34, 30],
+        [140, 60, 200],
+        [0, 255, 0],
+    ];
+    const MODES: [bool; 2] = [true, false];
+
+    /// THE INTENT RULE. The primary is stored and rendered EXACTLY as picked,
+    /// for every seed, in both modes.
+    #[test]
+    fn from_accent_primary_is_always_verbatim() {
+        for dark in MODES {
+            for seed in SEEDS {
+                assert_eq!(
+                    rgb_of(Palette::from_accent(seed, dark).accent),
+                    seed,
+                    "the primary was altered for {seed:?} (dark={dark})"
+                );
+            }
+        }
+    }
+
+    /// Light mode must actually be LIGHT for every seed - guards against the
+    /// mode flag being threaded through but never reaching the ladder.
+    #[test]
+    fn from_accent_light_mode_grounds_are_light() {
+        for seed in SEEDS {
+            let d = Palette::from_accent(seed, true);
+            let l = Palette::from_accent(seed, false);
+            let lum = |c: Color32| color::luminance(rgb_of(c));
+            assert!(lum(l.bg) > lum(d.bg), "light bg is not lighter than dark's for {seed:?}");
+            assert!(lum(l.bg) > 0.5, "light bg is not light for {seed:?}");
+            assert!(lum(d.bg) < 0.2, "dark bg is not dark for {seed:?}");
+        }
+    }
+
+    /// In light mode the panel floats LIGHTER than the page, the way paper
+    /// UIs work; in dark it lifts off a darker ground. If the step mapping
+    /// failed to invert, depth would read backwards in one of the two.
+    #[test]
+    fn from_accent_surface_depth_points_the_right_way() {
+        for seed in SEEDS {
+            let lum = |c: Color32| color::luminance(rgb_of(c));
+            let d = Palette::from_accent(seed, true);
+            assert!(lum(d.panel) >= lum(d.bg), "dark panel should lift off the ground for {seed:?}");
+            let l = Palette::from_accent(seed, false);
+            assert!(lum(l.panel) >= lum(l.bg), "light panel should float above the page for {seed:?}");
+        }
+    }
+
+    /// THE "IT'S JUST BLUE" GUARD. Two different picks must produce visibly
+    /// different grounds - the failure mode the old HSL-band code did not
+    /// have, but the thing this port exists to keep true going forward.
+    #[test]
+    fn from_accent_the_chrome_follows_the_seed() {
+        for dark in MODES {
+            let red = Palette::from_accent([255, 0, 0], dark);
+            let cyan = Palette::from_accent([0, 224, 255], dark);
+            for (label, a, b) in [("bg", red.bg, cyan.bg), ("panel", red.panel, cyan.panel), ("panel2", red.panel2, cyan.panel2)] {
+                let d = color::delta_e(rgb_of(a), rgb_of(b));
+                assert!(d > 8.0, "{label} barely moved between seeds (delta_e {d:.1}, dark={dark})");
+            }
+        }
+    }
+
+    /// Grounds are TINTED, not painted: even a screaming seed yields a
+    /// background you can stare at for hours.
+    #[test]
+    fn from_accent_grounds_stay_calm_for_every_seed() {
+        for dark in MODES {
+            for seed in SEEDS {
+                let p = Palette::from_accent(seed, dark);
+                for (label, g) in [("bg", p.bg), ("panel", p.panel)] {
+                    let [_, c, _] = color::rgb_to_oklch(rgb_of(g));
+                    assert!(c <= 0.06, "{label} is painted, not tinted, for {seed:?} dark={dark} (chroma {c:.3})");
+                }
+            }
+        }
+    }
+
+    /// Body text and muted text are placed at a readable tone against both
+    /// panel surfaces, for every seed - the ladder's core promise, and the
+    /// thing `enforce_readability` used to have to rescue after the fact.
+    #[test]
+    fn from_accent_text_reads_on_every_ground() {
+        for dark in MODES {
+            for seed in SEEDS {
+                let p = Palette::from_accent(seed, dark);
+                for (label, g) in [("bg", p.bg), ("panel", p.panel), ("panel2", p.panel2)] {
+                    let lc = color::apca_abs(rgb_of(p.text), rgb_of(g));
+                    assert!(lc >= color::LC_TEXT_MIN, "text on {label} is Lc {lc:.1} for {seed:?} dark={dark}");
+                }
+                let lc = color::apca_abs(rgb_of(p.muted), rgb_of(p.panel));
+                assert!(lc >= color::LC_MUTED, "muted text is Lc {lc:.1} for {seed:?} dark={dark}");
+            }
+        }
+    }
 }
