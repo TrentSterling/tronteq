@@ -56,12 +56,14 @@ const NODE_HIT_RADIUS: f32 = 22.0; // generous grab area (visual node is smaller
 
 pub struct DrawResponse {
     pub changed: bool,
+    pub selected_band: Option<usize>,
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut egui::Ui,
     bands: &mut [Band; NUM_BANDS],
+    selected_band: usize,
     sample_rate: f32,
     rainbow: bool,
     viz: &VizData,
@@ -74,6 +76,7 @@ pub fn draw(
     let painter = ui.painter_at(rect);
 
     let mut changed = false;
+    let mut selected = None;
 
     // Background + faint neon frame. Mode-aware as of v0.3 (dark scope / paper).
     painter.rect_filled(rect, 6.0, theme::canvas_bg());
@@ -102,12 +105,18 @@ pub fn draw(
             )),
         });
     } else {
+        if let Some(stage) = gl {
+            if let Ok(mut stage) = stage.lock() { stage.suspend(); }
+        }
         show.draw(&painter, rect, viz, rainbow);
     }
-    draw_grid(&painter, rect);
+    if uni.draw_editor { draw_grid(&painter, rect); }
 
     // Stackable realtime overlays (any combination), back to front.
-    let l = viz.layers;
+    let l = if uni.draw_overlays { viz.layers } else { Layers {
+        spectrum: false, peak_hold: false, analyzer: false, waterfall: false,
+        waveform: false, goniometer: false, loudness: false,
+    } };
     if l.waterfall {
         if let Some(tex) = viz.spectro_tex {
             draw_spectro(&painter, rect, tex);
@@ -133,6 +142,7 @@ pub fn draw(
     if l.goniometer {
         draw_goniometer(&painter, rect, viz.stereo);
     }
+    if !uni.draw_editor { return DrawResponse { changed: false, selected_band: None }; }
 
     // Composite response curve (computed by evaluating all 8 biquads).
     draw_composite(&painter, rect, bands, sample_rate, rainbow);
@@ -150,8 +160,9 @@ pub fn draw(
     let mut drag_idx: Option<usize> = ui.ctx().memory(|m| m.data.get_temp(id)).unwrap_or(None);
 
     if drag_started {
-        if let Some(pos) = pointer {
+        if let Some(pos) = ui.input(|i| i.pointer.press_origin()) {
             drag_idx = nearest_node(bands, rect, pos);
+            selected = drag_idx;
             ui.ctx().memory_mut(|m| m.data.insert_temp(id, drag_idx));
         }
     }
@@ -218,6 +229,9 @@ pub fn draw(
         painter.circle_filled(p, NODE_RADIUS, color);
         painter.circle_stroke(p, NODE_RADIUS, Stroke::new(1.5, theme::ink(255)));
         painter.circle_filled(p, 2.0, theme::ink(255));
+        if i == selected_band {
+            painter.circle_stroke(p, NODE_RADIUS + 5.0, Stroke::new(1.0, color));
+        }
 
         if hovered {
             let txt = format!(
@@ -244,6 +258,8 @@ pub fn draw(
 
         let node_rect = Rect::from_center_size(p, Vec2::splat(NODE_HIT_RADIUS * 2.0));
         let node_resp = ui.interact(node_rect, egui::Id::new(("tronteq-node", i)), Sense::click());
+        node_resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, i == selected_band, format!("EQ band {}", i + 1)));
+        if node_resp.clicked() || node_resp.secondary_clicked() || node_resp.double_clicked() { selected = Some(i); }
         if node_resp.secondary_clicked() {
             cycle_kind_idx = Some(i);
         }
@@ -259,11 +275,38 @@ pub fn draw(
         changed = true;
     }
 
-    DrawResponse { changed }
+    DrawResponse { changed, selected_band: selected }
 }
 
 fn rgba(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+#[cfg(test)]
+mod editing_tests {
+    use super::*;
+    use egui_kittest::{kittest::Queryable, Harness};
+    #[test]
+    fn clicking_and_dragging_a_node_updates_selection_and_only_that_band() {
+        let bands = std::array::from_fn(|i| Band::flat(tronteq_shared::DEFAULT_FREQS[i]));
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 500.0)).build_ui_state(|ui, s| {
+            let mut scene = crate::show::ShowState::new(crate::show::ShowMode::Off);
+            let viz = VizData { layers: Layers::default(), spectrum: &[], peaks: &[], waveform: &[], stereo: &[], loudness: &[], spectro_tex: None };
+            let response = draw(ui, &mut s.0, s.1, 48_000.0, true, &viz, &mut scene, None, crate::glstage::Uniforms::default());
+            if let Some(index) = response.selected_band { s.1 = index; }
+        }, (bands, 0));
+        h.get_by_label("EQ band 4").click(); h.run();
+        assert_eq!(h.state().1, 3);
+        assert_eq!(h.state().0, bands);
+        let start = h.get_by_label("EQ band 6").rect().center();
+        h.hover_at(start); h.drag_at(start); h.run();
+        let end = start - egui::vec2(0.0, 40.0);
+        h.hover_at(end); h.run();
+        h.drop_at(end); h.run();
+        assert_eq!(h.state().1, 5);
+        assert!(h.state().0[5].gain > 1.0);
+        for i in 0..NUM_BANDS { if i != 5 { assert_eq!(h.state().0[i], bands[i]); } }
+    }
 }
 
 /// Draw a connected polyline as ONE `Shape::line` (or a few hue chunks for the
@@ -365,14 +408,13 @@ fn draw_grid(painter: &egui::Painter, rect: Rect) {
     let grid = theme::canvas_grid();
     let zero = theme::canvas_zero();
     // Vertical: octaves.
-    let mut f = 20.0;
-    while f <= 20_000.0 {
+    for f in [20.0_f32, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0] {
         let x = freq_to_pixel(f, rect);
         painter.line_segment(
             [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
             Stroke::new(1.0, grid),
         );
-        if (f - 20.0).abs() < 1e-3 || f == 100.0 || f == 1000.0 || f == 10000.0 {
+        if f < 20_000.0 {
             let label = if f < 1000.0 {
                 format!("{:.0}", f)
             } else {
@@ -386,7 +428,6 @@ fn draw_grid(painter: &egui::Painter, rect: Rect) {
                 theme::canvas_label(),
             );
         }
-        f *= 2.0;
     }
     // Horizontal: 6 dB steps.
     let mut db = -DB_RANGE;

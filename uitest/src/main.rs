@@ -17,6 +17,8 @@ mod theme;
 mod dsp_preview;
 #[path = "../../gui/src/glstage.rs"]
 mod glstage;
+#[path = "../../gui/src/render_timer.rs"]
+mod render_timer;
 #[path = "../../gui/src/show.rs"]
 mod show;
 #[path = "../../gui/src/curve.rs"]
@@ -114,6 +116,7 @@ fn shot_canvas(name: &str, palette: theme::Palette, mode: show::ShowMode, rainbo
             curve::draw(
                 ui,
                 &mut bands,
+                0,
                 48_000.0,
                 rainbow,
                 &viz,

@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod about;
+mod audio_status;
 mod color;
 mod curve;
 mod devices;
@@ -18,10 +19,24 @@ mod settings;
 mod show;
 mod spectrogram;
 mod state_writer;
+mod state_recovery;
 mod theme;
 mod theme_window;
 mod visualizer;
+mod audio_format;
+mod audio_analysis;
 mod vizbus;
+mod viz_settings;
+mod viz_edit;
+mod viz_panel;
+mod viz_looks;
+mod presentation;
+mod scene_gallery;
+mod render_timer;
+mod sound_edit;
+mod eq_editor;
+mod profile_picker;
+use profile_picker::Action as ProfileAction;
 mod win;
 mod window_chrome;
 
@@ -126,11 +141,18 @@ const MIN_INNER_H: f32 = 300.0;
 fn main() -> Result<()> {
     install_crash_logger();
     log_line(&format!("start pid={} main tid={}", std::process::id(), tid()));
+    let startup = std::env::args().any(|arg| arg == "--startup");
 
     // Single instance: own the port, or hand the request to whoever does.
     let listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, SHOW_PORT)) {
         Ok(l) => l,
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            // A repeated logon/startup request must not open a window over the
+            // user's desktop. An ordinary second launch still opens the editor.
+            if startup {
+                log_line("startup: instance already running; leaving it in place");
+                return Ok(());
+            }
             use std::io::Write as _;
             log_line("second instance: poking the running one to show, then exiting");
             if let Ok(mut s) =
@@ -139,6 +161,10 @@ fn main() -> Result<()> {
                 let _ = s.write_all(b"show");
             }
             return Ok(());
+        }
+        Err(error) => {
+            log_line(&format!("single instance: cannot bind show port: {error}"));
+            return Err(error.into());
         }
     };
     std::thread::spawn(move || {
@@ -158,6 +184,7 @@ fn main() -> Result<()> {
     });
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("TrontEQ")
+        .with_active(!startup)
         // Custom chrome: the toolbar is the title bar (window_chrome.rs owns the
         // caption buttons, dragging, and edge-resize the OS border used to give us).
         .with_decorations(false)
@@ -183,9 +210,9 @@ fn main() -> Result<()> {
     let run = eframe::run_native(
         "TrontEQ",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(App::new(cc)?) as Box<dyn eframe::App>)
+            Ok(Box::new(App::new(cc, startup)?) as Box<dyn eframe::App>)
         }),
     );
     match &run {
@@ -201,6 +228,7 @@ const SHUFFLE_PERIOD: std::time::Duration = std::time::Duration::from_secs(18);
 
 struct App {
     state: state_writer::StateWriter,
+    show_recovery: bool,
     bands: [Band; NUM_BANDS],
     bypass: bool,
     sample_rate: f32,
@@ -214,14 +242,14 @@ struct App {
     rainbow: bool,
     viz: visualizer::Visualizer,
     layers: curve::Layers,
-    spec_peaks: Vec<f32>, // peak-hold caps (instant rise, slow fall)
-    loud_hist: Vec<f32>,  // rolling output RMS history
-    last_step: std::time::Instant, // wall-clock pacing for the history visualizers
+    capture: visualizer::Snapshot,
+    spectro_revision: u64,
     spectro: spectrogram::Spectrogram,
     about_icon: Option<egui::TextureHandle>,
 
     // Tray (hide-to-tray on close so the control panel stays alive)
     _tray: Option<TrayIcon>,
+    startup_pending: bool,
     app_hwnd: isize,
     /// LATCHED: the close button hid us to the tray. Only the tray Show /
     /// DoubleClick handlers and a second launch clear it. A tray'd window gets
@@ -256,6 +284,12 @@ struct App {
     // Output picker
     devices: Vec<devices::Device>,
     selected_device: usize,
+    device_error: Option<String>,
+    installer_error: Option<String>,
+    device_rx: Option<Receiver<std::result::Result<Vec<devices::Device>, String>>>,
+    next_device_refresh: std::time::Instant,
+    audio_status: audio_status::AudioStatus,
+    audio_live: bool,
     /// Receives the result of an in-flight `apply` (runs off-thread so the UI
     /// doesn't freeze during the audio-service restart).
     apply_rx: Option<Receiver<std::result::Result<String, String>>>,
@@ -264,10 +298,17 @@ struct App {
     // Profiles + persisted UI settings
     store: profiles::ProfileStore,
     active_profile: Option<String>,
+    sound_editor: sound_edit::Editor,
+    selected_band: usize,
+    chain_page: inspector::ChainPage,
+    profile_error: Option<String>,
     modal: Modal,
     name_buf: String,
     modal_focus: bool,
     settings_cache: settings::AppSettings,
+    settings_error: Option<String>,
+    settings_retry_at: std::time::Instant,
+    presentation: presentation::Presentation,
     /// The Theme window (gradient v2 controls): opened from the toolbar's
     /// accent swatch. Not persisted - always starts closed, same as `show_about`.
     show_theme_window: bool,
@@ -281,7 +322,8 @@ struct App {
     show_shuffle: bool,
     /// Stackable post-fx bitmask layered over any GL SHOW mode (see
     /// `glstage::FX_*`). 0 = off.
-    show_fx: u32,
+    viz_settings: viz_settings::VizSettings,
+    viz_browser: viz_panel::Browser,
     /// Next scheduled shuffle switch (checked every frame, only acted on
     /// while `show_shuffle` is on and a GL mode is active).
     shuffle_next: std::time::Instant,
@@ -289,7 +331,6 @@ struct App {
     shuffle_rng: u32,
     frame_ms: f32, // EMA of eframe's reported per-frame CPU cost
     profiler: profiler::Profiler,
-    vizbus: vizbus::VizBus,
     /// The shader stage (None if GL init failed; painter modes still work).
     gl_stage: Option<std::sync::Arc<std::sync::Mutex<glstage::GlStage>>>,
 }
@@ -301,16 +342,8 @@ enum Modal {
     Rename { old: String },
 }
 
-/// Deferred profile-chip actions (can't mutate the store while iterating it).
-enum ProfileAction {
-    Load(String),
-    Overwrite(String),
-    StartRename(String),
-    Delete(String),
-}
-
 impl App {
-    fn new(cc: &eframe::CreationContext) -> Result<Self> {
+    fn new(cc: &eframe::CreationContext, startup: bool) -> Result<Self> {
         let ctx = &cc.egui_ctx;
         // Native window handle for raw-Win32 hide/show (eframe's Visible command
         // can't restore a hidden window — proven in trontclicker/PSM).
@@ -354,8 +387,14 @@ impl App {
         };
         let delay_ms = if snap.version > 0 { snap.delay_ms } else { 0.0 };
 
-        let devices = devices::list().unwrap_or_default();
-        let selected_device = devices.iter().position(|d| d.is_default).unwrap_or(0);
+        let (devices, device_error) = match devices::list() {
+            Ok(devices) => (devices, None),
+            Err(e) => {
+                log_line(&format!("outputs: {e:#}"));
+                (Vec::new(), Some(format!("Could not list outputs: {e:#}")))
+            }
+        };
+        let selected_device = devices::selected_index(&devices, None);
 
         // Compile the GL viz stage once (glow backend exposes the context here).
         let gl_stage = cc.gl.as_ref().and_then(|gl| match glstage::GlStage::new(gl) {
@@ -409,11 +448,12 @@ impl App {
         let store = profiles::ProfileStore::load();
         let active_profile = ui_settings
             .active_profile
-            .clone()
-            .filter(|n| store.get(n).is_some());
+            .as_ref()
+            .and_then(|n| store.get(n).map(|p| p.name.clone()));
 
-        // System tray: close hides to tray (keeps the control panel alive, avoids
-        // a UAC relaunch since the GUI is elevated).
+        // Stable shell identity preserves the user's tray pin across launches.
+        // tray-icon >= 0.25 keeps its message window alive if Explorer is not
+        // ready yet, then registers the icon when TaskbarCreated arrives.
         let tray_menu = Menu::new();
         let show_item = MenuItem::new("Show TrontEQ", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
@@ -425,17 +465,22 @@ impl App {
             .ok()
             .and_then(|d| Icon::from_rgba(d.rgba, d.width, d.height).ok());
         let mut tray_builder = TrayIconBuilder::new()
+            .with_guid(0x63b19802_492e_4f5f_9cc1_6ba48e46271d)
             .with_tooltip("TrontEQ")
             .with_menu(Box::new(tray_menu));
         if let Some(icon) = tray_icon {
             tray_builder = tray_builder.with_icon(icon);
         }
-        let tray = tray_builder.build().ok();
-        log_line(if tray.is_some() {
-            "tray: built ok"
-        } else {
-            "tray: FAILED to build (close will exit instead of hiding)"
-        });
+        let tray = match tray_builder.build() {
+            Ok(tray) => {
+                log_line("tray: built ok (Explorer registration recovers automatically)");
+                Some(tray)
+            }
+            Err(error) => {
+                log_line(&format!("tray: FAILED to build: {error}; keeping window available"));
+                None
+            }
+        };
 
         // TWO flags, because conflating them is a livelock:
         //
@@ -563,6 +608,7 @@ impl App {
 
         // Push an initial committed state so APO stops bypassing.
         let mut me = App {
+            show_recovery: state.problem.is_some(),
             state,
             bands,
             bypass,
@@ -575,12 +621,12 @@ impl App {
             rainbow: ui_settings.rainbow,
             viz: visualizer::Visualizer::start(viz_paused.clone()),
             layers: ui_settings.layers,
-            spec_peaks: Vec::new(),
-            loud_hist: Vec::new(),
-            last_step: std::time::Instant::now(),
+            capture: visualizer::Snapshot::empty(),
+            spectro_revision: u64::MAX,
             spectro: spectrogram::Spectrogram::new(),
             about_icon: None,
             _tray: tray,
+            startup_pending: startup,
             app_hwnd,
             tray_hidden,
             viz_paused,
@@ -592,28 +638,54 @@ impl App {
             fps: 0.0,
             devices,
             selected_device,
+            device_error,
+            installer_error: devices::installer_error(),
+            device_rx: None,
+            next_device_refresh: std::time::Instant::now() + std::time::Duration::from_secs(5),
+            audio_status: audio_status::AudioStatus::default(),
+            audio_live: false,
             apply_rx: None,
             device_status: None,
             store,
+            sound_editor: sound_edit::Editor::new(sound_edit::Sound { bands, preamp: preamp_db, dynamics, profile: active_profile.clone() }),
             active_profile,
+            selected_band: 0,
+            chain_page: inspector::ChainPage::Eq,
+            profile_error: None,
             modal: Modal::None,
             name_buf: String::new(),
             modal_focus: false,
-            tab: inspector::Tab::from_str(&ui_settings.inspector_tab),
+            tab: if std::env::args().any(|a| a == "--visualizer") { inspector::Tab::Viz }
+                else { inspector::Tab::from_str(&ui_settings.inspector_tab) },
             show: show::ShowState::new(show::ShowMode::from_str(&ui_settings.show_mode)),
             show_shuffle: ui_settings.show_shuffle,
-            show_fx: ui_settings.show_fx,
+            viz_settings: {
+                let mut v = ui_settings.visualizer.clone().unwrap_or_else(|| viz_settings::VizSettings::from_legacy(ui_settings.show_fx, ui_settings.rainbow));
+                v.sanitize(); v
+            },
+            viz_browser: viz_panel::Browser::default(),
             shuffle_next: std::time::Instant::now() + SHUFFLE_PERIOD,
             shuffle_rng: 0x9E37_79B9,
             frame_ms: 0.0,
             profiler: profiler::Profiler::default(),
-            vizbus: vizbus::VizBus::new(),
             gl_stage,
             show_theme_window: std::env::var_os("TRONTEQ_THEME_WINDOW").is_some(),
             gradient_preset_sync: ui_settings.gradient_preset_sync,
             settings_cache: ui_settings,
+            settings_error: None,
+            settings_retry_at: std::time::Instant::now(),
+            presentation: presentation::Presentation::default(),
         };
-        me.commit();
+        if me.state.problem.is_none() { me.commit(); }
+        if std::env::args().any(|a| a == "--gallery") {
+            me.tab = inspector::Tab::Viz;
+            me.viz_browser.gallery.open = true;
+        }
+        if std::env::args().any(|a| a == "--present") && me.show.mode != show::ShowMode::Off && me.gl_stage.is_some() {
+            let (fullscreen, time) = ctx.input(|i| (i.viewport().fullscreen.unwrap_or(false), i.time));
+            me.presentation.enter(fullscreen, time);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
         Ok(me)
     }
 
@@ -732,41 +804,114 @@ impl App {
         self.small_frames < 30
     }
 
-    /// Apply the APO to the selected output on a background thread.
-    fn start_apply(&mut self) {
-        let Some(dev) = self.devices.get(self.selected_device) else { return };
-        let idx = dev.index;
+    fn refresh_devices(&mut self) {
+        if self.device_rx.is_some() {
+            return;
+        }
+        self.installer_error = devices::installer_error();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(devices::apply(idx).map_err(|e| e.to_string()));
+            let _ = tx.send(devices::list().map_err(|e| format!("{e:#}")));
+        });
+        self.device_rx = Some(rx);
+        self.next_device_refresh = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    }
+
+    fn poll_devices(&mut self) {
+        if let Some(rx) = &self.device_rx {
+            let result = match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("Device scan stopped unexpectedly".into())),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                match result {
+                    Ok(devices) => {
+                        let previous = self.devices.get(self.selected_device).map(|d| d.id.as_str());
+                        self.selected_device = devices::selected_index(&devices, previous);
+                        self.devices = devices;
+                        self.device_error = None;
+                    }
+                    Err(error) => {
+                        let message = format!("Could not list outputs: {error}");
+                        if self.device_error.as_ref() != Some(&message) {
+                            log_line(&message);
+                        }
+                        // Retain the last good list, but block Apply until a scan succeeds.
+                        self.device_error = Some(message);
+                    }
+                }
+                self.device_rx = None;
+            }
+        }
+        if self.apply_rx.is_none() && std::time::Instant::now() >= self.next_device_refresh {
+            self.refresh_devices();
+        }
+    }
+
+    /// Apply the APO to the selected endpoint on a background thread.
+    fn start_apply(&mut self) {
+        if self.apply_rx.is_some() || self.device_error.is_some() {
+            return;
+        }
+        let Some(dev) = self.devices.get(self.selected_device) else { return };
+        let id = dev.id.clone();
+        let name = dev.friendly_name.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = devices::apply(&id)
+                .map(|_| format!("Installed on {name}. Play audio to verify processing."))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
         });
         self.apply_rx = Some(rx);
-        self.device_status = Some((true, "applying…".to_string()));
+        self.device_status = Some((true, "Applying EQ...".to_string()));
     }
 
     fn poll_apply(&mut self) {
         if let Some(rx) = &self.apply_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.device_status = Some(match res {
-                    Ok(_) => (true, "✓ EQ active on this output".to_string()),
-                    Err(e) => (false, format!("✗ {}", e.lines().last().unwrap_or("failed"))),
+            let result = match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("Installer stopped unexpectedly".into())),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                self.device_status = Some(match result {
+                    Ok(message) => (true, message),
+                    Err(error) => {
+                        log_line(&format!("apply: {error}"));
+                        (false, error)
+                    }
                 });
                 self.apply_rx = None;
-                self.devices = devices::list().unwrap_or_default();
-                self.selected_device =
-                    self.selected_device.min(self.devices.len().saturating_sub(1));
+                self.refresh_devices();
             }
         }
     }
 
     fn commit(&mut self) {
-        self.state.write_state(
+        self.sound_editor.observe(self.current_sound());
+        if let Err(error) = self.state.write_state(
             &self.bands,
             self.bypass,
             self.preamp_db,
             &self.dynamics,
             self.delay_ms,
-        );
+        ) {
+            log_line(&format!("sound state: {error}"));
+            self.show_recovery = true;
+        }
+    }
+
+    fn current_sound(&self) -> sound_edit::Sound {
+        sound_edit::Sound { bands: self.bands, preamp: self.preamp_db, dynamics: self.dynamics, profile: self.active_profile.clone() }
+    }
+    fn restore_sound(&mut self, sound: sound_edit::Sound) {
+        self.bands = sound.bands;
+        self.preamp_db = sound.preamp;
+        self.dynamics = sound.dynamics;
+        self.active_profile = sound.profile.and_then(|name| self.store.get(&name).map(|p| p.name.clone()));
+        self.commit();
     }
 
     /// Reset the whole chain to defaults: flat EQ, 0 preamp, passive dynamics.
@@ -781,6 +926,7 @@ impl App {
         }
         self.preamp_db = 0.0;
         self.dynamics = Dynamics::default_passive();
+        self.active_profile = None;
         self.commit();
     }
 
@@ -796,10 +942,10 @@ impl App {
     }
 
     /// Save the current sound as `name` (overwrite if it exists) and make it active.
-    fn save_current_as(&mut self, name: &str) {
+    fn save_current_as(&mut self, name: &str) -> std::result::Result<(), String> {
         let name = name.trim();
         if name.is_empty() {
-            return;
+            return Err("Enter a profile name.".into());
         }
         let order = self
             .store
@@ -813,8 +959,9 @@ impl App {
             bands: self.bands,
             preamp_db: self.preamp_db,
             dynamics: self.dynamics,
-        });
+        })?;
         self.active_profile = Some(name.to_string());
+        Ok(())
     }
 }
 
@@ -832,9 +979,26 @@ impl eframe::App for App {
         if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
             self.profiler.overlay = !self.profiler.overlay;
         }
+        if !self.viz_browser.gallery.open { self.presentation.input(ctx); }
 
+        let visual_before_input = self.show.mode;
+        let shortcuts_blocked = self.presentation.active || self.viz_browser.gallery.open
+            || self.show_recovery || !matches!(self.modal, Modal::None);
+        if let Some((target, redo)) = viz_edit::shortcut(ctx, self.tab == inspector::Tab::Viz, shortcuts_blocked) {
+            match target {
+                viz_edit::Target::Visual => {
+                    let edit = if redo { self.viz_browser.editor.redo() } else { self.viz_browser.editor.undo() };
+                    if let Some(edit) = edit { edit.apply(&mut self.show.mode, &mut self.viz_settings, &mut self.viz_browser.selected_look); }
+                }
+                viz_edit::Target::Sound if self.state.problem.is_none() => {
+                    let sound = if redo { self.sound_editor.redo() } else { self.sound_editor.undo() };
+                    if let Some(sound) = sound { self.restore_sound(sound); }
+                }
+                _ => {}
+            }
+        }
         // Number keys 1-9 quickswap profiles (skipped while a text field has focus).
-        if !ctx.wants_keyboard_input() {
+        if self.state.problem.is_none() && !ctx.wants_keyboard_input() && !self.presentation.active && !self.viz_browser.gallery.open {
             const NUM_KEYS: [egui::Key; 9] = [
                 egui::Key::Num1,
                 egui::Key::Num2,
@@ -861,13 +1025,23 @@ impl eframe::App for App {
 
         // Hide-to-tray on close (tray Show/Quit handled in the tray handlers).
         // Only if a tray exists, else we'd trap the window with no way back.
-        if self._tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+        // eframe shows the native window after its first paint. Parking during
+        // that first update is undone by the runner, so wait for the next frame.
+        let startup_hide = self.startup_pending && ctx.cumulative_frame_nr() > 0;
+        if startup_hide {
+            self.startup_pending = false;
+        }
+        if self._tray.is_some() && (startup_hide || ctx.input(|i| i.viewport().close_requested())) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.tray_hidden.store(true, Ordering::Relaxed);
             self.visible.store(false, Ordering::Relaxed);
             self.viz_paused.store(true, Ordering::Relaxed);
             win::hide_window(self.app_hwnd);
-            log_line("hide to tray (close intercepted; process stays alive)");
+            log_line(if startup_hide {
+                "startup: parked in system tray"
+            } else {
+                "hide to tray (close intercepted; process stays alive)"
+            });
         }
 
         // While hidden to tray, do NOT build any UI or upload textures. Rendering
@@ -899,6 +1073,8 @@ impl eframe::App for App {
         let presentable = self.presentable(ctx);
         self.visible.store(presentable, Ordering::Relaxed);
         if !presentable {
+            self.sound_editor.finish_gesture();
+            self.state.checkpoint();
             // Build no UI and upload no textures. Beyond the CPU saving this is
             // also what stopped the 2026-06-04 crash: re-uploading egui-managed
             // textures (spectrogram waterfall, About icon) to an off-screen
@@ -914,7 +1090,11 @@ impl eframe::App for App {
 
         // Read APO telemetry up front: the toolbar warning chip and the bottom
         // meter both use it.
+        self.poll_devices();
         let tel = self.state.telemetry();
+        self.audio_live = self.audio_status.observe(tel.seq, std::time::Instant::now());
+        self.capture = self.viz.read();
+        if let Some(source) = &self.capture.source { self.sample_rate = source.format.rate as f32; }
         let t_panels = std::time::Instant::now();
 
         // Discord-style background wash, painted into the background layer
@@ -924,9 +1104,14 @@ impl eframe::App for App {
         // own opaque fills and stay solid dark regardless (house rule).
         theme::paint_gradient(ctx);
 
+        if !self.presentation.active {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(2.0);
-            ui.horizontal(|ui| {
+            let toolbar_width = (ui.available_width() - window_chrome::CAPTION_W).max(1.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(toolbar_width, 0.0),
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                |ui| {
                 let title_color = if self.rainbow {
                     theme::viz_hsv((ui.input(|i| i.time) as f32 * 0.2).fract())
                 } else {
@@ -946,6 +1131,7 @@ impl eframe::App for App {
                     );
                     window_chrome::drag_window(ctx, &ic);
                 }
+                if toolbar_width >= 600.0 {
                 let wm = ui.add(
                     egui::Label::new(
                         egui::RichText::new("TrontEQ")
@@ -957,72 +1143,62 @@ impl eframe::App for App {
                     .sense(egui::Sense::click_and_drag()),
                 );
                 window_chrome::drag_window(ctx, &wm);
+                }
                 ui.separator();
-                // Profile chips: click = load (keys 1-9 too), right-click = manage,
-                // `*` = tweaked since save. Factory chips are ordinary profiles.
-                let mut act: Option<ProfileAction> = None;
-                for e in &self.store.entries {
+                let choices: Vec<_> = self.store.entries.iter().map(|e| {
                     let p = &e.profile;
                     let active = self.active_profile.as_deref() == Some(p.name.as_str());
-                    let dirty = active && !p.matches(&self.bands, self.preamp_db, &self.dynamics);
-                    let label = if dirty { format!("{}*", p.name) } else { p.name.clone() };
-                    let resp = ui.selectable_label(active, label);
-                    let resp = if dirty {
-                        resp.on_hover_text("Tweaked since save. Click = reload saved, right-click = overwrite")
-                    } else {
-                        resp
-                    };
-                    if resp.clicked() {
-                        act = Some(ProfileAction::Load(p.name.clone()));
+                    profile_picker::Choice {
+                        name: &p.name, active,
+                        modified: active && !p.matches(&self.bands, self.preamp_db, &self.dynamics),
                     }
-                    resp.context_menu(|ui| {
-                        if ui.button("Overwrite with current").clicked() {
-                            act = Some(ProfileAction::Overwrite(p.name.clone()));
-                            ui.close();
-                        }
-                        if ui.button("Rename...").clicked() {
-                            act = Some(ProfileAction::StartRename(p.name.clone()));
-                            ui.close();
-                        }
-                        ui.menu_button("Delete", |ui| {
-                            if ui.button(format!("Really delete \"{}\"", p.name)).clicked() {
-                                act = Some(ProfileAction::Delete(p.name.clone()));
-                                ui.close();
-                            }
-                        });
-                    });
-                }
-                if ui
-                    .button("+")
-                    .on_hover_text("Save current sound as a new profile")
-                    .clicked()
-                {
-                    self.modal = Modal::SaveAs;
-                    self.name_buf.clear();
-                    self.modal_focus = true;
-                }
+                }).collect();
+                let act = ui.add_enabled_ui(self.state.problem.is_none(), |ui| profile_picker::show(ui, &choices, (toolbar_width * 0.3).clamp(110.0, 180.0))).inner;
                 if let Some(a) = act {
                     match a {
+                        ProfileAction::SaveAs => {
+                            self.profile_error = None;
+                            self.modal = Modal::SaveAs;
+                            self.name_buf.clear();
+                            self.modal_focus = true;
+                        }
                         ProfileAction::Load(n) => self.apply_profile(&n),
-                        ProfileAction::Overwrite(n) => self.save_current_as(&n),
+                        ProfileAction::Overwrite(n) => self.profile_error = self.save_current_as(&n).err(),
                         ProfileAction::StartRename(n) => {
+                            self.profile_error = None;
                             self.name_buf = n.clone();
                             self.modal = Modal::Rename { old: n };
                             self.modal_focus = true;
                         }
                         ProfileAction::Delete(n) => {
-                            self.store.delete(&n);
-                            if self.active_profile.as_deref() == Some(n.as_str()) {
-                                self.active_profile = None;
+                            match self.store.delete(&n) {
+                                Ok(()) => {
+                                    self.profile_error = None;
+                                    if self.active_profile.as_deref() == Some(n.as_str()) { self.active_profile = None; }
+                                }
+                                Err(error) => self.profile_error = Some(error),
                             }
                         }
                     }
                 }
                 let mut bypass = self.bypass;
-                if ui.checkbox(&mut bypass, "Bypass").changed() {
+                if ui.add_enabled(self.state.problem.is_none(), egui::Checkbox::new(&mut bypass, "Bypass")).changed() {
                     self.bypass = bypass;
                     self.commit();
                 }
+                if ui.selectable_label(self.viz_settings.stage_view, "Stage").on_hover_text("Toggle a clear visualizer canvas").clicked() {
+                    self.viz_settings.stage_view = !self.viz_settings.stage_view;
+                    self.tab = inspector::Tab::Viz;
+                }
+                if toolbar_width < 700.0 {
+                    ui.menu_button("App", |ui| {
+                        if ui.button("Theme...").clicked() { self.show_theme_window = true; ui.close(); }
+                        if ui.button(if theme::dark_mode() { "Light mode" } else { "Dark mode" }).clicked() {
+                            theme::set_mode(ctx, !theme::dark_mode()); ui.close();
+                        }
+                        if ui.button("About").clicked() { self.show_about = true; ui.close(); }
+                    });
+                } else {
                 // Theme window trigger: a small accent-colored swatch (click
                 // to open the full gradient v2 control panel — colors,
                 // dark/light, wash). Sits right before the quick Light/Dark
@@ -1056,16 +1232,17 @@ impl eframe::App for App {
                 if ui.button("About").clicked() {
                     self.show_about = true;
                 }
+                }
                 // The APO heartbeats telemetry every buffer; silence means the EQ
                 // isn't processing (not applied to the default output, or an old
                 // APO build without telemetry support).
-                if tel.seq == 0 {
-                    let warn = egui::RichText::new("! EQ silent")
+                if !self.audio_live {
+                    let warn = egui::RichText::new("! EQ not responding")
                         .color(egui::Color32::from_rgb(255, 170, 90));
                     if ui
                         .button(warn)
                         .on_hover_text(
-                            "No telemetry from the EQ on this output.\nOpen SETUP and hit \"Apply EQ here\".",
+                            "No live EQ telemetry. The visualizer captures Windows output independently.\nOpen SETUP to check the output and apply EQ.",
                         )
                         .clicked()
                     {
@@ -1077,7 +1254,6 @@ impl eframe::App for App {
                 // through them. Here we only reserve their footprint and turn
                 // the leftover gap into a window drag region.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(window_chrome::CAPTION_W);
                     let gap = ui.available_rect_before_wrap();
                     window_chrome::drag_region(ui, gap, "toolbar-drag-gap");
                 });
@@ -1090,14 +1266,11 @@ impl eframe::App for App {
         // vs out; read above the toolbar). Fall back to the WASAPI-loopback
         // output level when the APO isn't publishing so the meter still shows
         // something.
-        let (vrms, vpeak) = self.viz.level();
+        let (vrms, vpeak) = (self.capture.frame.rms, self.capture.frame.peak);
         egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let hint = "drag = gain  ·  shift-drag / scroll = Q  ·  ctrl-drag = frequency  ·  dbl-click = reset band  ·  right-click = type";
-                ui.label(hint);
-                if let Some(e) = &self.last_error {
-                    ui.colored_label(egui::Color32::LIGHT_RED, format!("· {e}"));
-                }
+                let hint = if self.viz_settings.stage_view { "Stage view  |  F11 fullscreen  |  EQ continues processing" }
+                    else { "drag = gain  ·  shift-drag / scroll = Q  ·  ctrl-drag = frequency  ·  dbl-click = reset band  ·  right-click = type" };
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Delivered fps, always visible (pacing proof lives here).
                     ui.label(
@@ -1112,7 +1285,7 @@ impl eframe::App for App {
                                 .small(),
                         );
                     }
-                    if tel.seq > 0 {
+                    if self.audio_live {
                         inout_meter(ui, tel.in_rms, tel.in_peak, tel.out_rms, tel.out_peak);
                         // ASCII on purpose: U+2192 has no coverage in Rajdhani
                         // and renders as a tofu box.
@@ -1127,28 +1300,50 @@ impl eframe::App for App {
                         }
                     } else {
                         out_meter(ui, vrms, vpeak);
-                        ui.label(egui::RichText::new("OUT").color(theme::muted()).small());
+                        ui.label(egui::RichText::new("LOOPBACK").color(theme::muted()).small());
                     }
+                    if let Some(error) = &self.settings_error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "Settings not saved").on_hover_text(error);
+                    }
+                    if let visualizer::Status::Error(error) = &self.capture.status {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "Visualizer unavailable").on_hover_text(error);
+                    }
+                    if let Some(error) = &self.profile_error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "Profile operation failed").on_hover_text(error);
+                    }
+                    if let Some(problem) = &self.state.problem {
+                        if ui.button(egui::RichText::new("EQ editing paused").color(egui::Color32::LIGHT_RED)).on_hover_text(&problem.message).clicked() { self.show_recovery = true; }
+                    }
+                    if let Some(error) = &self.state.backup_error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "Sound backup not saved").on_hover_text(error);
+                    }
+                    if let Some(error) = &self.last_error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                    let help = if self.viz_settings.stage_view { "F11 fullscreen" } else { "EQ controls" };
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(help).small().color(theme::muted())).on_hover_text(hint);
+                    });
                 });
             });
         });
 
         // Right-side inspector: CHAIN / VIZ / SETUP tabs.
         inspector::show(self, ctx);
+        }
         self.profiler.add(profiler::Scope::Panels, t_panels.elapsed());
 
-        // Shuffle: auto-cycle the GL SHOW modes every ~18s while one is
-        // active. GL modes only (painter modes are excluded on purpose -
-        // shuffle is a "let it ride" showcase mode for the shader stage).
-        if self.show_shuffle && self.show.mode.gl_mode().is_some() {
+        // Shuffle every scene, or just the saved favorites, on the chosen interval.
+        let shuffle_period = std::time::Duration::from_secs_f32(self.viz_settings.shuffle_seconds);
+        if self.show.mode != visual_before_input {
+            self.shuffle_next = std::time::Instant::now() + shuffle_period;
+        }
+        if self.show_shuffle && self.show.mode != show::ShowMode::Off {
             let now = std::time::Instant::now();
             if now >= self.shuffle_next {
-                let gl_modes: Vec<show::ShowMode> = show::ShowMode::ALL
-                    .iter()
-                    .copied()
-                    .filter(|m| m.gl_mode().is_some())
-                    .collect();
-                if gl_modes.len() > 1 {
+                let gl_modes = self.viz_settings.scene_pool();
+                if gl_modes.len() == 1 { self.show.mode = gl_modes[0]; }
+                else if gl_modes.len() > 1 {
                     let current = self.show.mode;
                     let mut next = current;
                     while next == current {
@@ -1162,62 +1357,24 @@ impl eframe::App for App {
                     }
                     self.show.mode = next;
                 }
-                self.shuffle_next = now + SHUFFLE_PERIOD;
+                self.viz_browser.editor.follow_scene(self.show.mode);
+                self.shuffle_next = now + shuffle_period;
             }
         } else {
             // Not actively shuffling: keep the deadline fresh so switching
-            // shuffle back on (or landing on a GL mode) doesn't fire an
+            // shuffle back on does not fire an
             // instant switch from a long-stale timestamp.
-            self.shuffle_next = std::time::Instant::now() + SHUFFLE_PERIOD;
+            self.shuffle_next = std::time::Instant::now() + shuffle_period;
         }
 
         let t_hist = std::time::Instant::now();
-        let wave = self.viz.snapshot();
-        let spectrum = self.viz.spectrum();
-        let stereo = self.viz.stereo();
-        let (rms, peak) = self.viz.level();
-        // Feed the data pipes (self-gates to 60 Hz; DATA tab + viz consume it).
-        self.vizbus.step(&spectrum, &stereo, rms, peak);
-
-        // Advance the GUI-side history visualizers on a fixed ~60Hz wall-clock
-        // cadence rather than once-per-frame. This decouples scroll speed from how
-        // fast frames actually arrive: unfocused we render at ~20fps, and on focus
-        // regain winit can deliver a burst of coalesced repaints — a per-frame
-        // advance would rip the waterfall / loudness / peak-fall forward ("lag then
-        // fast-forward catch-up"). We step at most once per 16ms and snap the clock
-        // to now after a gap, so a backlog is dropped, not replayed.
-        const STEP: std::time::Duration = std::time::Duration::from_millis(16);
-        let stepped = self.last_step.elapsed() >= STEP;
-        if stepped {
-            self.last_step = std::time::Instant::now();
-        }
-
-        // Peak-hold caps: rise tracks the live spectrum every frame (caps never sit
-        // below a current bar); the slow fall is what we time-gate.
-        if self.spec_peaks.len() != spectrum.len() {
-            self.spec_peaks = spectrum.clone();
-        } else {
-            for (p, &s) in self.spec_peaks.iter_mut().zip(spectrum.iter()) {
-                *p = if s >= *p {
-                    s
-                } else if stepped {
-                    (*p - 0.012).max(s)
-                } else {
-                    *p
-                };
-            }
-        }
-
-        if stepped {
-            // Loudness history ring (~8s at 60Hz).
-            self.loud_hist.push(rms);
-            if self.loud_hist.len() > 480 {
-                let excess = self.loud_hist.len() - 480;
-                self.loud_hist.drain(0..excess);
-            }
-            if self.layers.waterfall {
-                self.spectro.push(&spectrum);
-            }
+        let analyzed = self.capture.frame.clone();
+        let wave = &analyzed.wave;
+        let spectrum = &analyzed.spectrum;
+        let stereo = &analyzed.stereo;
+        if self.layers.waterfall && self.spectro_revision != self.capture.revision {
+            self.spectro.replace_rows(&analyzed.waterfall);
+            self.spectro_revision = self.capture.revision;
         }
         let spectro_tex = if self.layers.waterfall {
             self.spectro.texture(ctx, self.rainbow)
@@ -1233,28 +1390,30 @@ impl eframe::App for App {
         // Uniforms for the GL stage: VizBus stats + theme accent + the audio
         // textures' source data, all by value (Copy) for the paint callback.
         let uni = {
-            let b = &self.vizbus;
+            let b = &analyzed.bus;
+            let energy = self.viz_settings.energy;
+            let (fx_order, fx_mix, fx_count) = self.viz_settings.effect_uniforms();
             let acc = theme::viz_accent();
             let mut spec_arr = [0.0f32; glstage::SPEC_W];
             for (i, s) in spectrum.iter().take(glstage::SPEC_W).enumerate() {
-                spec_arr[i] = *s;
+                spec_arr[i] = (*s * energy).clamp(0.0, 1.0);
             }
             let mut wave_arr = [0.0f32; glstage::WAVE_W];
             if wave.len() >= 2 {
                 let step = (wave.len() / glstage::WAVE_W).max(1);
                 for (i, w) in wave.iter().step_by(step).take(glstage::WAVE_W).enumerate() {
-                    wave_arr[i] = *w;
+                    wave_arr[i] = (*w * energy).clamp(-1.0, 1.0);
                 }
             }
             glstage::Uniforms {
                 mode: glstage::GlMode::Warp, // overwritten by the active mode
-                bass: b.bass,
-                mid: b.mid,
-                treble: b.treble,
-                pulse: b.pulse,
+                bass: (b.bass * energy).min(1.0),
+                mid: (b.mid * energy).min(1.0),
+                treble: (b.treble * energy).min(1.0),
+                pulse: (b.pulse * energy).min(1.0),
                 beat_phase: b.beat_phase,
                 bright: b.centroid,
-                rainbow: self.rainbow,
+                rainbow: self.viz_settings.rainbow,
                 accent: [
                     acc.r() as f32 / 255.0,
                     acc.g() as f32 / 255.0,
@@ -1264,32 +1423,43 @@ impl eframe::App for App {
                 wave: wave_arr,
                 bpm: b.bpm,
                 bpm_conf: b.bpm_conf,
-                flux: b.flux,
-                loud: ((b.loud_db + 60.0) / 60.0).clamp(0.0, 1.0),
+                flux: (b.flux * energy).min(1.0),
+                loud: (((b.loud_db + 60.0) / 60.0).clamp(0.0, 1.0) * energy).min(1.0),
                 crest: (b.crest_db / 24.0).clamp(0.0, 1.0),
                 corr: b.corr,
                 width: b.width,
-                fx: self.show_fx,
+                fx: 0, fx_order, fx_mix, fx_count,
+                speed: self.viz_settings.speed,
+                brightness: self.viz_settings.brightness,
+                render_scale: self.viz_settings.quality.scale(),
+                transition_seconds: self.viz_settings.transition_seconds,
+                draw_editor: !self.presentation.active && !self.viz_settings.stage_view,
+                draw_overlays: !self.presentation.active && (!self.viz_settings.stage_view || self.viz_settings.overlays_in_stage),
             }
         };
         let mut eq_changed = false;
         {
             let viz = curve::VizData {
                 layers: self.layers,
-                spectrum: &spectrum,
-                peaks: &self.spec_peaks,
-                waveform: &wave,
-                stereo: &stereo,
-                loudness: &self.loud_hist,
+                spectrum,
+                peaks: &analyzed.peaks,
+                waveform: wave,
+                stereo,
+                loudness: &analyzed.loudness,
                 spectro_tex,
             };
             let bands = &mut self.bands;
+            let selected = &mut self.selected_band;
             let show = &mut self.show;
             let gl = self.gl_stage.as_ref();
             let (sample_rate, rainbow) = (self.sample_rate, self.rainbow);
-            egui::CentralPanel::default().show(ctx, |ui| {
-                eq_changed =
-                    curve::draw(ui, bands, sample_rate, rainbow, &viz, show, gl, uni).changed;
+            let panel = egui::CentralPanel::default();
+            let panel = if self.presentation.active { panel.frame(egui::Frame::NONE) } else { panel };
+            panel.show(ctx, |ui| {
+                if self.state.problem.is_some() { ui.disable(); }
+                let response = curve::draw(ui, bands, *selected, sample_rate, rainbow, &viz, show, gl, uni);
+                eq_changed = response.changed;
+                if let Some(index) = response.selected_band { *selected = index; }
             });
         }
         self.profiler.add(profiler::Scope::Canvas, t_canvas.elapsed());
@@ -1297,6 +1467,12 @@ impl eframe::App for App {
             self.commit();
         }
 
+        self.presentation.controls(ctx, self.show.mode.label());
+        let before_gallery = self.show.mode;
+        viz_panel::gallery(ctx, &mut self.show.mode, &mut self.viz_settings, &mut self.viz_browser);
+        if self.show.mode != before_gallery { self.shuffle_next = std::time::Instant::now() + shuffle_period; }
+
+        if !self.presentation.active {
         // Save-as / rename modal (small centered window with a name field).
         let modal_kind = match &self.modal {
             Modal::None => None,
@@ -1310,7 +1486,7 @@ impl eframe::App for App {
             let mut do_cancel = false;
             let name_taken = {
                 let n = self.name_buf.trim();
-                !n.is_empty() && self.store.get(n).is_some() && rename_old.as_deref() != Some(n)
+                !n.is_empty() && self.store.get(n).is_some() && !rename_old.as_deref().is_some_and(|old| old.eq_ignore_ascii_case(n))
             };
             egui::Window::new(title)
                 .collapsible(false)
@@ -1320,13 +1496,15 @@ impl eframe::App for App {
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut self.name_buf)
                             .hint_text("profile name")
+                            .char_limit(80)
                             .desired_width(200.0),
                     );
                     if self.modal_focus {
                         edit.request_focus();
                         self.modal_focus = false;
                     }
-                    let name_ok = !self.name_buf.trim().is_empty() && !(is_rename && name_taken);
+                    if edit.changed() { self.profile_error = None; }
+                    let name_ok = profiles::validate_name(&self.name_buf).is_ok() && !(is_rename && name_taken);
                     if is_rename && name_taken {
                         ui.colored_label(egui::Color32::LIGHT_RED, "name already taken");
                     } else if name_taken {
@@ -1337,6 +1515,10 @@ impl eframe::App for App {
                         );
                     }
                     let submit = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if let Some(error) = &self.profile_error {
+                        ui.set_max_width(340.0);
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
                     ui.horizontal(|ui| {
                         let verb = if is_rename { "Rename" } else { "Save" };
                         if ui.add_enabled(name_ok, egui::Button::new(verb)).clicked()
@@ -1353,17 +1535,21 @@ impl eframe::App for App {
                 });
             if do_apply {
                 let new_name = self.name_buf.trim().to_string();
-                match rename_old {
+                let result = match rename_old {
                     Some(old) => {
                         let keep_active = self.active_profile.as_deref() == Some(old.as_str());
-                        self.store.rename(&old, &new_name);
-                        if keep_active {
+                        let result = self.store.rename(&old, &new_name);
+                        if result.is_ok() && keep_active {
                             self.active_profile = Some(new_name);
                         }
+                        result
                     }
                     None => self.save_current_as(&new_name),
+                };
+                match result {
+                    Ok(()) => { self.modal = Modal::None; self.profile_error = None; }
+                    Err(error) => self.profile_error = Some(error),
                 }
-                self.modal = Modal::None;
             } else if do_cancel {
                 self.modal = Modal::None;
             }
@@ -1371,12 +1557,33 @@ impl eframe::App for App {
 
         about::show(ctx, &mut self.show_about, &mut self.about_icon);
         theme_window::show(self, ctx);
+        }
+
+        self.sound_editor.observe(self.current_sound());
+        if !ctx.input(|i| i.pointer.primary_down()) { self.sound_editor.finish_gesture(); self.state.checkpoint(); }
+        if self.show_recovery {
+            if let Some(problem) = &self.state.problem {
+                let decision = state_recovery::show(ctx, problem, self.state.recovery_sound(), &self.state.recovery_label());
+                match decision {
+                    Some(state_recovery::Decision::Later) => self.show_recovery = false,
+                    Some(state_recovery::Decision::Apply(action)) => {
+                        if let Ok(s) = self.state.recover(action) {
+                            self.bands = s.bands; self.preamp_db = s.preamp_db; self.dynamics = s.dynamics; self.bypass = s.is_bypassed(); self.delay_ms = s.delay_ms;
+                            self.active_profile = None;
+                            self.sound_editor = sound_edit::Editor::new(self.current_sound());
+                            self.show_recovery = false;
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
 
         // Persist UI settings on change. There is no clean shutdown hook (tray
         // Quit is process::exit), so save-on-change is the only reliable path.
         let pal = theme::current();
         let cur = settings::AppSettings {
-            schema: 1,
+            schema: 2,
             dark_mode: pal.dark,
             rainbow: self.rainbow,
             layers: self.layers,
@@ -1385,7 +1592,8 @@ impl eframe::App for App {
             inspector_tab: self.tab.as_str().to_string(),
             show_mode: self.show.mode.as_str().to_string(),
             show_shuffle: self.show_shuffle,
-            show_fx: self.show_fx,
+            show_fx: self.viz_settings.legacy_mask(),
+            visualizer: Some(self.viz_settings.clone()),
             theme_name: pal.name,
             theme_colors: pal.source,
             gradient: theme::gradient_enabled(),
@@ -1410,9 +1618,17 @@ impl eframe::App for App {
         // gate that means a save (temp-write + rename) per frame for as long
         // as the mouse button is held - avoidable SSD churn a plain "did the
         // value change" diff doesn't catch (SpaceView precedent).
-        if cur != self.settings_cache && !ctx.input(|i| i.pointer.primary_down()) {
-            cur.save();
-            self.settings_cache = cur;
+        if cur == self.settings_cache {
+            self.settings_error = None;
+        } else if !ctx.input(|i| i.pointer.primary_down()) && std::time::Instant::now() >= self.settings_retry_at {
+            match cur.save() {
+                Ok(()) => { self.settings_cache = cur; self.settings_error = None; }
+                Err(error) => {
+                    log_line(&format!("settings: {error}"));
+                    self.settings_error = Some(error);
+                    self.settings_retry_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                }
+            }
         }
 
         // Self-screenshot pipe: the harness drops shot.req and we ReadPixels

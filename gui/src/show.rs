@@ -232,10 +232,37 @@ impl ShowMode {
             _ => ShowMode::Off,
         }
     }
-    /// GL-stage modes are rendered by glstage, not the painter.
+    pub fn category(self) -> &'static str {
+        use ShowMode::*;
+        match self {
+            Off => "",
+            GlWarp | GlFlame | GlSmoke | GlNebula | GlSkybox | GlAurora | GlOcean => "Atmosphere",
+            GlStarfield | GlWormhole | GlPulsar | GlBlackHole => "Space",
+            GlPlasma | GlKaleido | GlMetaballs | GlVoronoi | GlJulia | GlSpiro | GlHexGrid | GlDna => "Geometry",
+            BarsXl | ScopeTrails | GlTerrain | GlScopeRing | GlCity | GlSonar => "Audio",
+            GlMatrix | GlOutrun | GlDiscoBall | GlCopper | GlLedWall => "Retro",
+            Tunnel | Particles | GlTunnel3d | GlRipples | GlLaser | GlLightning | GlBubbles => "Motion",
+        }
+    }
+    pub fn description(self) -> &'static str {
+        match self.category() {
+            "Atmosphere" => "Flowing light, glowing clouds and open skies.",
+            "Space" => "Deep space, orbital motion and stellar light.",
+            "Geometry" => "Color, symmetry and evolving patterns.",
+            "Audio" => "Your music becomes the shape of the scene.",
+            "Retro" => "Neon worlds, phosphor and dance-floor light.",
+            "Motion" => "Pulses, trails and movement driven by your music.",
+            _ => "Choose a scene below to bring your music to life.",
+        }
+    }
+    /// Every scene uses the same stage and post-processing path.
     pub fn gl_mode(self) -> Option<crate::glstage::GlMode> {
         use crate::glstage::GlMode as G;
         match self {
+            ShowMode::BarsXl => Some(G::Bars),
+            ShowMode::ScopeTrails => Some(G::Trails),
+            ShowMode::Tunnel => Some(G::Tunnel),
+            ShowMode::Particles => Some(G::Particles),
             ShowMode::GlWarp => Some(G::Warp),
             ShowMode::GlFlame => Some(G::Flame),
             ShowMode::GlSmoke => Some(G::Smoke),
@@ -331,7 +358,7 @@ impl ShowState {
     /// Draw the active mode as the deepest canvas layer. Advances the animation
     /// on a 16ms wall-clock gate internally; safe to call every frame.
     pub fn draw(&mut self, painter: &egui::Painter, rect: Rect, viz: &VizData, rainbow: bool) {
-        if self.mode == ShowMode::Off || self.mode.gl_mode().is_some() {
+        if !matches!(self.mode, ShowMode::BarsXl | ShowMode::ScopeTrails | ShowMode::Tunnel | ShowMode::Particles) {
             return;
         }
         let now = Instant::now();
@@ -343,7 +370,7 @@ impl ShowState {
             ShowMode::BarsXl => self.draw_bars_xl(painter, rect, viz.spectrum, rainbow),
             ShowMode::ScopeTrails => self.draw_scope_trails(painter, rect, rainbow),
             ShowMode::Tunnel => self.draw_tunnel(painter, rect, viz.spectrum, rainbow),
-            ShowMode::Particles => self.draw_particles(painter, rect),
+            ShowMode::Particles => self.draw_particles(painter, rect, rainbow),
             // Off + every GL mode: nothing to paint here (the GL stage owns
             // those, and draw() early-returns for them anyway).
             _ => {}
@@ -577,14 +604,14 @@ impl ShowState {
     }
 
     /// Spectral fountain + kick bursts, one mesh for the whole pool.
-    fn draw_particles(&self, painter: &egui::Painter, rect: Rect) {
+    fn draw_particles(&self, painter: &egui::Painter, rect: Rect, rainbow: bool) {
         let mut mesh = egui::Mesh::default();
         for p in &self.parts {
             if p.life <= 0.0 || !rect.contains(Pos2::new(p.x, p.y)) {
                 continue;
             }
             let frac = (p.life / p.max_life).clamp(0.0, 1.0);
-            let col = rgba(theme::viz_hsv(p.hue), (230.0 * frac) as u8);
+            let col = rgba(if rainbow { theme::viz_hsv(p.hue) } else { theme::viz_accent() }, (230.0 * frac) as u8);
             let r = p.size * (0.6 + 0.4 * frac);
             let idx = mesh.vertices.len() as u32;
             mesh.colored_vertex(Pos2::new(p.x - r, p.y - r), col);

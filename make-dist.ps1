@@ -24,6 +24,9 @@ $sources = [ordered]@{
     'dev-cert.cer'        = 'C:\ProgramData\TrontEq\dev-cert.cer'
     'bootstrap.ps1'       = Join-Path $root 'bootstrap.ps1'
     'SETUP.md'            = Join-Path $root 'SETUP.md'
+    'README.md'           = Join-Path $root 'README.md'
+    'CHANGELOG.md'        = Join-Path $root 'CHANGELOG.md'
+    'install-user-startup.ps1' = Join-Path $root 'install-user-startup.ps1'
     'Install TrontEQ.cmd' = Join-Path $root 'packaging\Install TrontEQ.cmd'
     'Launch TrontEQ.cmd'  = Join-Path $root 'packaging\Launch TrontEQ.cmd'
 }
@@ -39,7 +42,16 @@ if ($missing) {
     exit 1
 }
 
-if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+# Resolve the exact disposable output before any recursive cleanup.
+$expectedDist = [IO.Path]::GetFullPath((Join-Path $root 'dist/TrontEQ')).TrimEnd('\','/')
+if ([IO.Path]::GetFullPath($dist).TrimEnd('\','/') -ne $expectedDist) {
+    throw 'Refusing to clean an unexpected distribution path.'
+}
+if (Test-Path -LiteralPath $dist) {
+    $distItem = Get-Item -LiteralPath $dist
+    if ($distItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Distribution path is a reparse point.' }
+    Remove-Item -LiteralPath $expectedDist -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 foreach ($kv in $sources.GetEnumerator()) {

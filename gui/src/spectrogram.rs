@@ -1,5 +1,5 @@
-//! Scrolling FFT-history waterfall. Each GUI frame a new spectrum column is
-//! pushed; the texture maps frequency -> X (log-spaced, matching the EQ curve),
+//! Scrolling FFT-history waterfall. Audio-clock rows are supplied by capture;
+//! the texture maps frequency -> X (log-spaced, matching the EQ curve),
 //! time -> Y (newest at top, scrolling down), intensity -> color. Built into a
 //! texture so it draws as a single backdrop image behind the curve.
 
@@ -31,6 +31,7 @@ impl Spectrogram {
     }
 
     /// Push the latest spectrum bars as the newest (top) row.
+    #[allow(dead_code)] // Used by standalone preview shells.
     pub fn push(&mut self, bars: &[f32]) {
         if bars.len() < 2 {
             return;
@@ -39,6 +40,13 @@ impl Spectrogram {
         while self.rows.len() > ROWS {
             self.rows.pop_back();
         }
+        self.dirty = true;
+    }
+
+    /// Replace with an audio-clock snapshot, oldest first. No repeated UI-frame rows.
+    pub fn replace_rows<const N: usize>(&mut self, rows: &[[f32; N]]) {
+        self.rows.clear();
+        self.rows.extend(rows.iter().rev().take(ROWS).map(|r| r.to_vec()));
         self.dirty = true;
     }
 

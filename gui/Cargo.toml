@@ -13,7 +13,8 @@ eframe = { workspace = true, features = ["glow"] }
 egui = { workspace = true }
 anyhow = { workspace = true }
 windows = { workspace = true }
-tray-icon = "0.19"
+# Keeps the tray window alive until Explorer is ready and restores it on restart.
+tray-icon = "=0.25.1"
 raw-window-handle = "0.6"
 rustfft = "6"
 serde = { workspace = true }
@@ -25,3 +26,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Embeds the asInvoker manifest (Medium integrity) + the .exe icon (Trent's face).
 # APO install/device work delegated to tronteq-cli elevated on demand (privilege separation).
 winresource = "0.1"
+
+[dev-dependencies]
+egui_kittest = "0.33"

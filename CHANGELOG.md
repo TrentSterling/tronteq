@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.13.0] - 2026-10-11
+
+- Start in the system tray at Windows sign-in. The normal-user task waits ten
+  seconds, has no runtime cutoff or battery restrictions, and retries failures.
+- Recover tray registration when Explorer is not ready or recreates its taskbar.
+  A stable tray GUID preserves the notification-area pin. Repeated startup
+  requests leave the running instance undisturbed; normal launches restore it.
+- Add a stable per-user installation and Start menu shortcut. Development
+  deployments update that installed copy before restarting the task.
+- Ship the completed 37-scene visualizer library, gallery, saved looks, ordered
+  effect stack, transitions, render quality controls, and presentation mode.
+- Add precise sound editing, separate sound and visual undo/redo, A/B comparison,
+  and compact controls. Validate WASAPI formats and analyze audio on the capture
+  thread with fixed-rate histories.
+- Use native output enumeration and stable endpoint IDs for installs. Restart
+  audio after installation failures, bound shared-state reads, and offer explicit
+  recovery from confirmed sound snapshots.
+- Validation: 138 workspace tests passed (one opt-in live-capture test skipped),
+  release build succeeded, and native startup, quiet duplicate launch, icon
+  recovery, two restore/close cycles, and tray CPU checks passed. Audio control
+  bytes were unchanged during the tray checks.
+
 ## [0.12.6] - 2026-08-01
 
 Three theme bugs, all the same shape: something displayed a different value than

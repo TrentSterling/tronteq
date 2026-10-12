@@ -23,12 +23,24 @@ fn signtool_path() -> Option<PathBuf> {
     None
 }
 
-/// Where `apo\build.bat` drops the fresh DLL.
+/// Resolve both the portable layout and the source build independently of CWD.
+/// An elevated GUI launch commonly starts in System32.
 pub fn dll_build_path() -> PathBuf {
-    // tronteq-cli.exe typically runs via `cargo run -p tronteq-cli` from the
-    // workspace root; fall back to CWD-relative.
-    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    here.join("apo").join("build").join("TrontEqApo.dll")
+    let exe = std::env::current_exe().unwrap_or_default();
+    let dir = exe.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let portable = dir.join("TrontEqApo.dll");
+    if portable.is_file() {
+        return portable;
+    }
+    // target/release or target/debug (and a deps subdirectory for tests).
+    for parent in dir.ancestors() {
+        if parent.file_name().is_some_and(|name| name == "target") {
+            if let Some(root) = parent.parent() {
+                return root.join("apo/build/TrontEqApo.dll");
+            }
+        }
+    }
+    portable
 }
 
 pub fn dev_cert_present() -> bool {

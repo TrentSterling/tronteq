@@ -29,8 +29,8 @@ if (Get-Process tronteq -ErrorAction SilentlyContinue) {
 }
 
 # 2) Rebuild (exe now unlocked). cmd /c so native stderr doesn't wrap in ErrorRecords.
-"--- cargo build --release -p tronteq ---" | Out-File $log -Append -Encoding utf8
-cmd /c "cargo build --release -p tronteq 2>&1" | Out-File $log -Append -Encoding utf8
+"--- cargo build --release -p tronteq -p tronteq-cli ---" | Out-File $log -Append -Encoding utf8
+cmd /c "cargo build --release -p tronteq -p tronteq-cli 2>&1" | Out-File $log -Append -Encoding utf8
 $build = $LASTEXITCODE
 "build exit: $build" | Out-File $log -Append -Encoding utf8
 if ($build -ne 0) {
@@ -38,7 +38,22 @@ if ($build -ne 0) {
     exit 1
 }
 
-# 3) Relaunch the new build via the scheduler (elevated, no UAC).
+# 3) Refresh the stable user installation when the task points there. Building
+# target/release alone must not relaunch an older installed executable.
+$installed = Join-Path $env:LOCALAPPDATA 'Programs/TrontEQ'
+try {
+    $task = Get-ScheduledTask -TaskName TrontEQ -ErrorAction Stop
+    if ($task.Actions[0].Execute -eq (Join-Path $installed 'tronteq.exe')) {
+        foreach ($name in @('tronteq.exe', 'tronteq-cli.exe')) {
+            Copy-Item -LiteralPath (Join-Path $rel $name) -Destination (Join-Path $installed $name) -Force -ErrorAction Stop
+        }
+        'Updated the installed GUI and CLI.' | Out-File $log -Append -Encoding utf8
+    }
+} catch {
+    "RESULT: DEPLOY FAILED - $_" | Out-File $log -Append -Encoding utf8
+    exit 1
+}
+# Relaunch as the normal user in the tray.
 schtasks /run /tn TrontEQ *>> $log
 Start-Sleep -Seconds 10
 

@@ -12,5 +12,8 @@ memmap2 = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
 [dev-dependencies]
 serde_json = { workspace = true }

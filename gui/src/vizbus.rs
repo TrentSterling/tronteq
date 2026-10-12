@@ -1,4 +1,4 @@
-//! VizBus — the data pipes. One struct, stepped once per frame (16ms gate),
+//! VizBus: shared audio statistics, stepped at exactly 60 Hz by the capture analyzer,
 //! holding every derived audio statistic the app can visualize: band energies,
 //! spectral centroid + flux, a beat-pulse envelope, a realtime BPM estimate
 //! (autocorrelation of the onset strength), momentary loudness, crest factor,
@@ -8,9 +8,6 @@
 //! consume the same fields, so what you see in DATA is exactly what a viz can
 //! be driven by. Zero steady-state allocation: fixed rings everywhere.
 
-use std::time::Instant;
-
-const STEP: std::time::Duration = std::time::Duration::from_millis(16);
 /// Sparkline depth: 4 seconds at 60 Hz.
 pub const HIST: usize = 240;
 /// Onset ring: 8 seconds at 60 Hz feeds the BPM autocorrelation.
@@ -22,6 +19,24 @@ pub struct History {
     buf: [f32; HIST],
     idx: usize,
     len: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_120_bpm_signal_locks_on_the_audio_tick_grid() {
+        let mut bus = VizBus::new();
+        for tick in 0..720 {
+            let mut bars = [0.0; 64];
+            if tick % 30 < 3 { bars[..16].fill(0.8); }
+            bus.step(&bars, &[], 0.1, 0.2);
+        }
+        assert!((118.0..122.0).contains(&bus.bpm), "BPM {}", bus.bpm);
+        assert!(bus.bpm_conf > 0.5, "confidence {}", bus.bpm_conf);
+        assert!((bus.loud_db + 20.0).abs() < 0.001);
+        assert_eq!(bus.hist[Signal::Loud as usize].len(), 240);
+    }
 }
 
 impl Default for History {
@@ -67,6 +82,7 @@ pub enum Signal {
     Count,
 }
 
+#[derive(Clone)]
 pub struct VizBus {
     // Current values (also the newest sample of each history).
     pub bass: f32,
@@ -79,7 +95,7 @@ pub struct VizBus {
     pub bpm_conf: f32,
     /// 0..1 sawtooth locked to the BPM grid (soft-resynced on strong beats).
     pub beat_phase: f32,
-    /// Momentary loudness, dBFS over a ~400ms RMS window (LUFS-flavored).
+    /// Unweighted level in dBFS over a 400ms RMS window. This is not LUFS.
     pub loud_db: f32,
     pub crest_db: f32,
     pub corr: f32,
@@ -96,7 +112,6 @@ pub struct VizBus {
     rms_win: [f32; 24], // ~400ms of per-step RMS
     rms_idx: usize,
     steps: u32,
-    last_step: Instant,
 }
 
 impl VizBus {
@@ -124,12 +139,10 @@ impl VizBus {
             rms_win: [0.0; 24],
             rms_idx: 0,
             steps: 0,
-            last_step: Instant::now(),
         }
     }
 
-    /// Advance the bus (16ms wall-clock gated; call every frame, cheap no-op
-    /// between steps).
+    /// Advance once per 1/60 second of audio, independent of UI frame delivery.
     pub fn step(
         &mut self,
         spectrum: &[f32],
@@ -137,11 +150,6 @@ impl VizBus {
         rms: f32,
         peak: f32,
     ) {
-        let now = Instant::now();
-        if now.duration_since(self.last_step) < STEP {
-            return;
-        }
-        self.last_step = now;
         self.steps = self.steps.wrapping_add(1);
         let n = spectrum.len();
         if n < 8 {

@@ -49,6 +49,15 @@ pub struct Uniforms {
     /// the mode's feedback pass, over the feedback loop's output — the
     /// feedback texture itself never sees post-fx (would corrupt the trail).
     pub fx: u32,
+    pub fx_order: [u32; 10],
+    pub fx_mix: [f32; 10],
+    pub fx_count: usize,
+    pub speed: f32,
+    pub brightness: f32,
+    pub render_scale: f32,
+    pub transition_seconds: f32,
+    pub draw_editor: bool,
+    pub draw_overlays: bool,
 }
 
 impl Default for Uniforms {
@@ -73,6 +82,9 @@ impl Default for Uniforms {
             corr: 0.0,
             width: 0.0,
             fx: 0,
+            fx_order: [0; 10], fx_mix: [1.0; 10], fx_count: 0,
+            speed: 1.0, brightness: 1.0, draw_editor: true, draw_overlays: true,
+            render_scale: 1.0, transition_seconds: 0.0,
         }
     }
 }
@@ -113,9 +125,13 @@ pub enum GlMode {
     Pulsar,
     BlackHole,
     Ocean,
+    Bars,
+    Trails,
+    Tunnel,
+    Particles,
 }
 
-pub const MODE_COUNT: usize = 33;
+pub const MODE_COUNT: usize = 37;
 
 /// Stackable post-fx bits for `Uniforms::fx` — mix and match over ANY base
 /// GL mode. Kept as plain constants (not an enum) since any combination is
@@ -137,14 +153,16 @@ pub struct GlStage {
     prog: [glow::Program; MODE_COUNT],
     present: glow::Program,
     post: glow::Program,
+    compose: glow::Program,
     vao: glow::VertexArray,
     fbo: [glow::Framebuffer; 2],
     tex: [glow::Texture; 2],
-    /// Third color target: the stackable post-fx pass renders here from the
-    /// mode's feedback output, kept fully separate from the ping-pong pair
-    /// so post-fx NEVER re-enters the feedback loop.
-    post_fbo: glow::Framebuffer,
-    post_tex: glow::Texture,
+    /// Two post targets keep every effect composable without touching scene feedback.
+    post_fbo: [glow::Framebuffer; 2],
+    post_tex: [glow::Texture; 2],
+    /// Current composed art and the frozen outgoing frame. Neither enters scene feedback.
+    display_fbo: [glow::Framebuffer; 2],
+    display_tex: [glow::Texture; 2],
     size: (i32, i32),
     spec_tex: glow::Texture,
     wave_tex: glow::Texture,
@@ -152,11 +170,30 @@ pub struct GlStage {
     hist_row: usize,
     frame: u64,
     ping: usize,
-    /// Simulation clock: advanced by CLAMPED real dt per painted frame, so a
-    /// stalled frame never fast-forwards the effects on resume (backlog is
-    /// dropped, not replayed — same rule as the painter histories).
+    /// Fixed-step scene clock shared by every animation and feedback pass.
     sim: f32,
     last_paint: Option<Instant>,
+    last_mode: Option<GlMode>,
+    accumulator: f32,
+    fade_elapsed: f32,
+    fade_duration: f32,
+    timer: crate::render_timer::RenderTimer,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct RenderStats {
+    pub width: i32,
+    pub height: i32,
+    pub gpu_ms: Option<f32>,
+}
+
+fn native_fbo(id: i32) -> Option<glow::Framebuffer> {
+    std::num::NonZeroU32::new(id as u32).map(glow::NativeFramebuffer)
+}
+
+fn render_size(vp: [i32; 4], scale: f32) -> (i32, i32) {
+    let scale = if scale.is_finite() { scale.clamp(0.5, 1.0) } else { 1.0 };
+    (((vp[2] as f32 * scale).round() as i32).max(8), ((vp[3] as f32 * scale).round() as i32).max(8))
 }
 
 const VS_FULL: &str = r#"#version 330 core
@@ -2363,23 +2400,92 @@ void main() {
     frag = vec4(min(outCol, vec3(1.3)), 1.0);
 }"#;
 
+// The original four painter scenes now share the same audio, clock, palette
+// and post-processing contract as the rest of the library.
+const FRAG_BARS: &str = r#"
+void main() {
+    float x = floor(vUv.x * 48.) / 48.;
+    float amp = spec(x) * .82;
+    float gap = smoothstep(.05, .11, fract(vUv.x * 48.)) * (1. - smoothstep(.89, .95, fract(vUv.x * 48.)));
+    float y = vUv.y - .08;
+    float bar = step(0., y) * (1. - smoothstep(amp, amp + .004, y)) * gap;
+    float cap = exp(-abs(y - amp) * 550.) * gap;
+    vec3 c = uRainbow == 1 ? hsv2rgb(vec3(x * .82, .85, 1.)) : uAccent;
+    vec3 col = c * (bar * (.25 + vUv.y * .85) + cap * 1.4);
+    col += c * exp(-abs(y - amp) * 65.) * .12;
+    frag = vec4(col, 1.);
+}"#;
+
+const FRAG_TRAILS: &str = r#"
+void main() {
+    vec2 uv = (vUv - .5) * .997 + .5;
+    vec3 prev = texture(uPrev, uv).rgb * .92;
+    float y = .5 + wav(vUv.x) * .38;
+    float d = abs(vUv.y - y);
+    vec3 c = uRainbow == 1 ? hsv2rgb(vec3(vUv.x * .65 + uTime * .025, .72, 1.)) : uAccent;
+    vec3 col = c * (exp(-d * 420.) + exp(-d * 70.) * .25);
+    frag = vec4(max(prev, col), 1.);
+}"#;
+
+const FRAG_TUNNEL: &str = r#"
+void main() {
+    vec2 p = aspect(vUv);
+    float r = length(p);
+    float a = atan(p.y, p.x);
+    float shape = r * (1. + .07 * sin(a * 6. + uTime * .3));
+    float rings = abs(fract(-log(max(shape, .001)) * 1.8 - uTime * .7 - uBass * .2) - .5);
+    float beam = exp(-rings * 90.) * smoothstep(.02, .16, r);
+    vec3 c = uRainbow == 1 ? hsv2rgb(vec3(a / 6.283 + r * .4 + uTime * .03, .8, 1.)) : uAccent;
+    frag = vec4(c * beam * (.7 + spec(fract(a / 6.283)) * .8), 1.);
+}"#;
+
+const FRAG_PARTICLES: &str = r#"
+void main() {
+    vec2 p = aspect(vUv);
+    vec3 col = texture(uPrev, (vUv - .5) * .992 + .5).rgb * .88;
+    for (int i = 0; i < 48; ++i) {
+        float seed = float(i);
+        float age = fract(uTime * (.12 + hash(vec2(seed, 4.)) * .09) + hash(vec2(seed, 7.)));
+        float a = seed * 2.39996 + sin(uTime * .2 + seed) * .2;
+        vec2 center = vec2(cos(a), sin(a)) * age * (1. + uBass * .3);
+        float d = length(p - center);
+        float size = .005 + spec(seed / 48.) * .009;
+        float light = exp(-d / size * 2.) * (1. - age) * (1. + uPulse);
+        vec3 c = uRainbow == 1 ? hsv2rgb(vec3(seed / 48. + uTime * .015, .8, 1.)) : uAccent;
+        col += c * light;
+    }
+    frag = vec4(min(col, vec3(1.5)), 1.);
+}"#;
+
 const FRAG_PRESENT: &str = r#"#version 330 core
 in vec2 vUv;
 out vec4 frag;
 uniform sampler2D uTex;
-void main() { frag = vec4(texture(uTex, vUv).rgb, 1.); }
+uniform float uBrightness;
+void main() { frag = vec4(texture(uTex, vUv).rgb * uBrightness, 1.); }
 "#;
 
-/// Stackable post-fx uber-shader. Runs ONCE, over the mode's already-resolved
-/// feedback-pass result (`uTex`), never touching the feedback loop itself.
-/// `uFx` is a bitmask; every set bit's block runs, in bit order, each acting
-/// on whatever `uv`/`col` the earlier blocks left behind — that's what makes
-/// combinations stack instead of needing N*N dedicated shader variants.
+const FRAG_COMPOSE: &str = r#"#version 330 core
+in vec2 vUv;
+out vec4 frag;
+uniform sampler2D uTex;
+uniform sampler2D uFrom;
+uniform float uBrightness;
+uniform float uFade;
+void main() {
+    vec3 current = clamp(texture(uTex, vUv).rgb * uBrightness, 0., 1.);
+    frag = vec4(mix(texture(uFrom, vUv).rgb, current, uFade), 1.);
+}
+"#;
+
+/// One effect per pass. Each spatial sampler reads the preceding pass, so
+/// enabling a later effect cannot discard earlier effects. Feedback stays pure.
 const FRAG_POST: &str = r#"#version 330 core
 in vec2 vUv;
 out vec4 frag;
 uniform sampler2D uTex;
 uniform int   uFx;
+uniform float uMix;
 uniform vec2  uRes;
 uniform float uTime;
 uniform float uPulse;
@@ -2507,7 +2613,7 @@ void main() {
         col = tc;
     }
 
-    frag = vec4(clamp(col, 0.0, 1.6), 1.0);
+    frag = vec4(mix(texture(uTex, vUv).rgb, clamp(col, 0.0, 1.6), uMix), 1.0);
 }"#;
 
 /// Fragment sources in `GlMode` order.
@@ -2545,6 +2651,10 @@ const PROGRAM_SRC: [&str; MODE_COUNT] = [
     FRAG_PULSAR,
     FRAG_BLACKHOLE,
     FRAG_OCEAN,
+    FRAG_BARS,
+    FRAG_TRAILS,
+    FRAG_TUNNEL,
+    FRAG_PARTICLES,
 ];
 
 impl GlStage {
@@ -2586,6 +2696,7 @@ impl GlStage {
                 progs.try_into().map_err(|_| "prog array".to_string())?;
             let present = compile(VS_FULL, FRAG_PRESENT)?;
             let post = compile(VS_FULL, FRAG_POST)?;
+            let compose = compile(VS_FULL, FRAG_COMPOSE)?;
             let vao = gl.create_vertex_array()?;
 
             let mk_tex = || -> Result<glow::Texture, String> {
@@ -2617,19 +2728,24 @@ impl GlStage {
 
             let fbo = [gl.create_framebuffer()?, gl.create_framebuffer()?];
             let tex = [mk_tex()?, mk_tex()?];
-            let post_fbo = gl.create_framebuffer()?;
-            let post_tex = mk_tex()?;
+            let post_fbo = [gl.create_framebuffer()?, gl.create_framebuffer()?];
+            let post_tex = [mk_tex()?, mk_tex()?];
+            let display_fbo = [gl.create_framebuffer()?, gl.create_framebuffer()?];
+            let display_tex = [mk_tex()?, mk_tex()?];
             gl.bind_texture(glow::TEXTURE_2D, None);
 
             Ok(GlStage {
                 prog,
                 present,
                 post,
+                compose,
                 vao,
                 fbo,
                 tex,
                 post_fbo,
                 post_tex,
+                display_fbo,
+                display_tex,
                 size: (0, 0),
                 spec_tex,
                 wave_tex,
@@ -2639,6 +2755,11 @@ impl GlStage {
                 ping: 0,
                 sim: 0.0,
                 last_paint: None,
+                last_mode: None,
+                accumulator: 0.0,
+                fade_elapsed: 0.0,
+                fade_duration: 0.0,
+                timer: crate::render_timer::RenderTimer::new(gl),
             })
         }
     }
@@ -2648,6 +2769,7 @@ impl GlStage {
         if (w, h) == self.size || w <= 0 || h <= 0 {
             return;
         }
+        gl.disable(glow::SCISSOR_TEST);
         for i in 0..2 {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.tex[i]));
             gl.tex_image_2d(
@@ -2665,43 +2787,123 @@ impl GlStage {
         // Third target for the post-fx pass, sized with the ping-pong pair.
         // Kept fully separate from tex[0]/tex[1] so post-fx can never feed
         // back into the mode's own feedback loop.
-        gl.bind_texture(glow::TEXTURE_2D, Some(self.post_tex));
+        for i in 0..2 {
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.post_tex[i]));
         gl.tex_image_2d(
             glow::TEXTURE_2D, 0, glow::RGBA16F as i32, w, h, 0,
             glow::RGBA, glow::FLOAT, glow::PixelUnpackData::Slice(None),
         );
-        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.post_fbo));
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.post_fbo[i]));
         gl.framebuffer_texture_2d(
             glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D,
-            Some(self.post_tex), 0,
+            Some(self.post_tex[i]), 0,
         );
         gl.clear_color(0.0, 0.0, 0.0, 0.0);
         gl.clear(glow::COLOR_BUFFER_BIT);
+        }
+        for i in 0..2 {
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.display_tex[i]));
+            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0,
+                glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.display_fbo[i]));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(self.display_tex[i]), 0);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+        }
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         self.size = (w, h);
     }}
+
+    pub fn stats(&self) -> RenderStats {
+        RenderStats { width: self.size.0, height: self.size.1, gpu_ms: self.timer.milliseconds }
+    }
+
+    /// Off must not resurrect a cached scene or crossfade from an invisible old frame.
+    pub fn suspend(&mut self) {
+        self.last_mode = None;
+        self.last_paint = None;
+        self.fade_duration = 0.0;
+    }
 
     /// One feedback pass + present, inside egui's paint callback. `vp` is
     /// egui_glow's own viewport for this callback: [left_px, from_bottom_px,
     /// width_px, height_px] (GL bottom-origin).
     pub fn paint(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4]) {
+        let now = Instant::now();
+        let elapsed = self.last_paint.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(1.0 / 60.0);
+        self.last_paint = Some(now);
+        self.paint_elapsed(gl, u, vp, elapsed);
+    }
+
+    /// All scenes, including feedback, use the same 60 Hz simulation clock.
+    /// Explicit elapsed time also makes renderer checks deterministic.
+    pub fn paint_elapsed(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4], elapsed: f32) {
+        if vp[2] < 8 || vp[3] < 8 { return; }
+        let timing = self.timer.begin(gl);
+        self.paint_timed(gl, u, vp, elapsed);
+        crate::render_timer::RenderTimer::end(gl, timing);
+    }
+
+    fn paint_timed(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4], elapsed: f32) {
+        let resized = self.size != render_size(vp, u.render_scale);
+        let changed = self.last_mode != Some(u.mode);
+        if changed && !resized && self.last_mode.is_some() && u.transition_seconds > 0.0 {
+            // Capture the last composed image, including any interrupted fade.
+            // Copy on selection only; the outgoing shader does not keep running.
+            unsafe {
+                let read = gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING);
+                let draw = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
+                gl.disable(glow::SCISSOR_TEST);
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(self.display_fbo[0]));
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(self.display_fbo[1]));
+                gl.blit_framebuffer(0, 0, self.size.0, self.size.1, 0, 0, self.size.0, self.size.1, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, native_fbo(read));
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, native_fbo(draw));
+            }
+            self.fade_elapsed = 0.0;
+            self.fade_duration = u.transition_seconds.clamp(0.0, 2.0);
+        } else if resized || changed || u.transition_seconds <= 0.0 {
+            self.fade_duration = 0.0;
+        } else {
+            // A scene held at speed zero can still be selected and faded into view.
+            self.fade_elapsed += elapsed.max(0.0);
+        }
+        if changed || resized {
+            self.accumulator = 0.0;
+            self.paint_frame(gl, u, vp, true);
+            return;
+        }
+        self.accumulator += elapsed.clamp(0.0, 0.05) * u.speed.clamp(0.0, 2.0);
+        let steps = ((self.accumulator * 60.0 + 1e-5).floor() as usize).min(6);
+        self.accumulator = (self.accumulator - steps as f32 / 60.0).max(0.0);
+        if steps == 0 { self.paint_frame(gl, u, vp, false); }
+        else { for _ in 0..steps { self.paint_frame(gl, u, vp, true); } }
+    }
+
+    fn paint_frame(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4], advance: bool) {
         unsafe {
-            let (w, h) = (vp[2], vp[3]);
+            let (w, h) = render_size(vp, u.render_scale);
             if w < 8 || h < 8 {
                 return;
             }
-            self.frame = self.frame.wrapping_add(1);
-            // Sim clock: clamp dt so frame stalls never fast-forward the FX.
-            let now = Instant::now();
-            let dt = self
-                .last_paint
-                .map(|t| now.duration_since(t).as_secs_f32())
-                .unwrap_or(1.0 / 60.0)
-                .min(0.05);
-            self.last_paint = Some(now);
-            self.sim += dt;
+            if advance {
+                self.frame = self.frame.wrapping_add(1);
+                self.sim += 1.0 / 60.0;
+            }
             let prev_fbo = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
             self.ensure_size(gl, w, h);
+            if self.last_mode != Some(u.mode) {
+                // Scene-local feedback must not inherit another scene's image.
+                gl.disable(glow::SCISSOR_TEST);
+                gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                for target in self.fbo {
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target));
+                    gl.clear(glow::COLOR_BUFFER_BIT);
+                }
+                self.sim = 1.0 / 60.0;
+                self.ping = 0;
+                self.last_mode = Some(u.mode);
+            }
 
             // Upload audio textures (spectrum, waveform, and every other frame
             // one new row of the scrolling spectrum-history for the terrain).
@@ -2723,7 +2925,7 @@ impl GlStage {
             );
             gl.active_texture(glow::TEXTURE3);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.hist_tex));
-            if self.frame % 2 == 0 {
+            if advance && self.frame % 2 == 0 {
                 gl.tex_sub_image_2d(
                     glow::TEXTURE_2D, 0, 0, self.hist_row as i32, SPEC_W as i32, 1,
                     glow::RED, glow::FLOAT, glow::PixelUnpackData::Slice(Some(spec_bytes)),
@@ -2734,9 +2936,10 @@ impl GlStage {
             // Offscreen feedback pass. Scissor must be OFF here (egui's window
             // scissor would clip the FBO), blend off (we own every pixel).
             let src = self.ping;
-            let dst = 1 - self.ping;
+            let dst = if advance { 1 - self.ping } else { self.ping };
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
+            if advance {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo[dst]));
             gl.viewport(0, 0, w, h);
             let prog = self.prog[u.mode as usize];
@@ -2768,22 +2971,29 @@ impl GlStage {
             gl.uniform_1_f32(loc("uWidth").as_ref(), u.width);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            }
 
-            // Stackable post-fx pass: reads the mode's just-rendered result
-            // from tex[dst] and writes into the SEPARATE post_fbo/post_tex —
-            // never back into tex[dst] itself, so the feedback loop that mode
-            // shaders read next frame (uPrev) stays pure and untouched by
-            // post-fx. Skipped entirely when no bit is set (present reads
-            // tex[dst] directly below, zero extra cost).
-            let present_src = if u.fx != 0 {
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.post_fbo));
+            // Each enabled effect reads its predecessor and writes to the other post target.
+            let mut order = u.fx_order;
+            let mut mixes = u.fx_mix;
+            let mut count = u.fx_count.min(10);
+            if count == 0 && u.fx != 0 {
+                for bit in 0..10 {
+                    if u.fx & (1 << bit) != 0 { order[count] = 1 << bit; mixes[count] = 1.0; count += 1; }
+                }
+            }
+            let mut present_src = self.tex[dst];
+            for i in 0..count {
+                let target = i % 2;
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.post_fbo[target]));
                 gl.viewport(0, 0, w, h);
                 gl.use_program(Some(self.post));
                 gl.active_texture(glow::TEXTURE0);
-                gl.bind_texture(glow::TEXTURE_2D, Some(self.tex[dst]));
+                gl.bind_texture(glow::TEXTURE_2D, Some(present_src));
                 let ploc = |n: &str| gl.get_uniform_location(self.post, n);
                 gl.uniform_1_i32(ploc("uTex").as_ref(), 0);
-                gl.uniform_1_i32(ploc("uFx").as_ref(), u.fx as i32);
+                gl.uniform_1_i32(ploc("uFx").as_ref(), order[i] as i32);
+                gl.uniform_1_f32(ploc("uMix").as_ref(), mixes[i]);
                 gl.uniform_2_f32(ploc("uRes").as_ref(), w as f32, h as f32);
                 gl.uniform_1_f32(ploc("uTime").as_ref(), self.sim);
                 gl.uniform_1_f32(ploc("uPulse").as_ref(), u.pulse);
@@ -2793,10 +3003,25 @@ impl GlStage {
                 gl.uniform_3_f32(ploc("uAccent").as_ref(), u.accent[0], u.accent[1], u.accent[2]);
                 gl.bind_vertex_array(Some(self.vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
-                self.post_tex
-            } else {
-                self.tex[dst]
-            };
+                present_src = self.post_tex[target];
+            }
+
+            // Compose art only. Keep EQ and measurement overlays at native resolution.
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.display_fbo[0]));
+            gl.viewport(0, 0, w, h);
+            gl.use_program(Some(self.compose));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(present_src));
+            gl.active_texture(glow::TEXTURE4);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.display_tex[1]));
+            let cloc = |name: &str| gl.get_uniform_location(self.compose, name);
+            gl.uniform_1_i32(cloc("uTex").as_ref(), 0);
+            gl.uniform_1_i32(cloc("uFrom").as_ref(), 4);
+            gl.uniform_1_f32(cloc("uBrightness").as_ref(), u.brightness);
+            let fade = if self.fade_duration > 0.0 { (self.fade_elapsed / self.fade_duration).clamp(0.0, 1.0) } else { 1.0 };
+            gl.uniform_1_f32(cloc("uFade").as_ref(), fade * fade * (3.0 - 2.0 * fade));
+            gl.bind_vertex_array(Some(self.vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
 
             // Present: restore egui's framebuffer + ITS viewport (the callback
             // rect) + scissor, then a plain fullscreen triangle fills exactly
@@ -2812,8 +3037,10 @@ impl GlStage {
             gl.enable(glow::SCISSOR_TEST);
             gl.use_program(Some(self.present));
             gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(present_src));
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.display_tex[0]));
             gl.uniform_1_i32(gl.get_uniform_location(self.present, "uTex").as_ref(), 0);
+            gl.uniform_1_f32(gl.get_uniform_location(self.present, "uBrightness").as_ref(), 1.0);
+            gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);
 

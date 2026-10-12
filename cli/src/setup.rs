@@ -310,18 +310,52 @@ pub fn grant_programdata_acl(dir: &str) -> Result<()> {
 }
 
 pub fn stop_audio() -> Result<()> {
-    let _ = Command::new(system32("net.exe")).args(["stop", "audiosrv", "/y"]).status();
+    let status = Command::new(system32("net.exe")).args(["stop", "audiosrv", "/y"])
+        .status().context("stop Windows Audio")?;
+    if !status.success() {
+        bail!("Could not stop Windows Audio: {status}. Run the installer as administrator.");
+    }
     Ok(())
 }
 
 pub fn start_audio() -> Result<()> {
     // audiosrv has dependent services; `net start` starts it, the deps come back
     // with it. Best-effort.
-    let _ = Command::new(system32("net.exe")).args(["start", "audiosrv"]).status();
+    let status = Command::new(system32("net.exe")).args(["start", "audiosrv"])
+        .status().context("start Windows Audio")?;
+    if !status.success() {
+        bail!("Could not restart Windows Audio: {status}");
+    }
     Ok(())
 }
 
-// ---- Autostart (scheduled task: elevated at logon, no UAC) -------------------
+/// An install error after stopping audio must not leave the machine silent.
+pub struct AudioRestartGuard(bool);
+
+impl AudioRestartGuard {
+    pub fn stop() -> Result<Self> {
+        stop_audio()?;
+        Ok(Self(true))
+    }
+
+    pub fn restart(mut self) -> Result<()> {
+        start_audio()?;
+        self.0 = false;
+        Ok(())
+    }
+}
+
+impl Drop for AudioRestartGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            if let Err(error) = start_audio() {
+                eprintln!("Audio recovery failed: {error:#}");
+            }
+        }
+    }
+}
+
+// ---- Autostart (interactive, normal-user task, no UAC) ----------------------
 
 fn gui_exe_path() -> Result<String> {
     let dir = std::env::current_exe()
@@ -336,14 +370,15 @@ fn gui_exe_path() -> Result<String> {
 /// Medium app's modifier-less global hotkey and UIPI-breaks drag/drop onto it).
 pub fn register_autostart() -> Result<()> {
     let exe = gui_exe_path()?;
-    let status = Command::new(system32("schtasks.exe"))
-        .args([
-            "/create", "/tn", "TrontEQ", "/tr", &exe, "/sc", "onlogon", "/rl", "LIMITED", "/f",
-        ])
+    // Pass the executable as data, never interpolate it into PowerShell code.
+    let status = Command::new(system32("WindowsPowerShell\\v1.0\\powershell.exe"))
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+            include_str!("register-autostart.ps1")])
+        .env("TRONTEQ_GUI_EXE", &exe)
         .status()
-        .context("run schtasks /create")?;
+        .context("register TrontEQ logon task")?;
     if !status.success() {
-        bail!("schtasks /create failed: {:?}", status);
+        bail!("TrontEQ startup registration failed: {status}");
     }
     Ok(())
 }

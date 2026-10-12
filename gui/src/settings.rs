@@ -28,6 +28,8 @@ pub struct AppSettings {
     /// Stackable post-fx bitmask (see `glstage::FX_*`). 0 = off.
     #[serde(default)]
     pub show_fx: u32,
+    /// None migrates the previous bitmask and shared rainbow control.
+    pub visualizer: Option<crate::viz_settings::VizSettings>,
     /// Theme name; built-ins resolve by name, derived themes rebuild from
     /// `theme_colors`. Empty = pre-theme settings file -> honor `dark_mode`.
     pub theme_name: String,
@@ -77,6 +79,7 @@ impl Default for AppSettings {
             show_mode: "off".into(),
             show_shuffle: false,
             show_fx: 0,
+            visualizer: None,
             theme_name: String::new(),
             theme_colors: Vec::new(),
             gradient: true,
@@ -121,15 +124,42 @@ impl AppSettings {
         }
     }
 
-    pub fn save(&self) {
-        let json = match serde_json::to_string_pretty(self) {
-            Ok(j) => j,
-            Err(_) => return,
-        };
-        let tmp = format!("{SETTINGS_FILE}.tmp");
-        let write = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, SETTINGS_FILE));
-        if let Err(e) = write {
-            log_line(&format!("settings: save failed: {e}"));
-        }
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(std::path::Path::new(SETTINGS_FILE))
+    }
+
+    pub(crate) fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Could not encode settings: {e}"))?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, path))
+            .map_err(|e| format!("Could not save {}: {e}. Retrying automatically.", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn saved_looks_survive_disk_roundtrip_and_write_failure_preserves_previous_file() {
+        let dir = std::env::temp_dir().join(format!("tronteq-settings-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut settings = AppSettings::default();
+        let mut visual = crate::viz_settings::VizSettings::default();
+        visual.saved_looks.push(crate::viz_looks::Look::capture("My scene", crate::show::ShowMode::GlFlame, &visual));
+        settings.visualizer = Some(visual);
+        settings.save_to(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let loaded: AppSettings = serde_json::from_slice(&original).unwrap();
+        assert_eq!(loaded.visualizer.unwrap().saved_looks[0].name, "My scene");
+        let obstacle = dir.join("settings.json.tmp");
+        std::fs::create_dir(&obstacle).unwrap();
+        settings.show_mode = "gl_ocean".into();
+        assert!(settings.save_to(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_dir(&obstacle).unwrap();
+        settings.save_to(&path).unwrap();
+        assert_eq!(serde_json::from_slice::<AppSettings>(&std::fs::read(&path).unwrap()).unwrap().show_mode, "gl_ocean");
+        std::fs::remove_file(path).unwrap(); std::fs::remove_dir(dir).unwrap();
     }
 }

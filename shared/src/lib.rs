@@ -6,6 +6,9 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+#[cfg(windows)]
+pub mod endpoints;
+
 use std::fs::OpenOptions;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -202,149 +205,163 @@ impl EqState {
     }
 }
 
-/// Writable handle on the memory-mapped state file.
+/// Writable mapping. Rust access is serialized locally and with an OS file lock;
+/// the APO still reads the unchanged 224-byte seqlock ABI without taking a lock.
 pub struct StateHandle {
     _mmap: MmapMut,
     ptr: *mut EqState,
+    file: std::sync::Mutex<std::fs::File>,
 }
-
 unsafe impl Send for StateHandle {}
 unsafe impl Sync for StateHandle {}
 
+#[derive(Debug)]
+pub enum StateError {
+    Busy { version: u64 },
+    Changed { expected: u64, actual: u64 },
+    Locked,
+    Invalid(String),
+    Io(std::io::Error),
+}
+impl std::fmt::Display for StateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy { version } => write!(f, "The sound state has an unfinished write (version {version})."),
+            Self::Changed { expected, actual } => write!(f, "The sound state changed from version {expected} to {actual}. Reload it before restoring."),
+            Self::Locked => write!(f, "Another process is accessing the sound state. Try reloading it."),
+            Self::Invalid(error) => write!(f, "Invalid sound state: {error}"),
+            Self::Io(error) => write!(f, "Sound state access failed: {error}"),
+        }
+    }
+}
+impl std::error::Error for StateError {}
+
+struct FileGuard<'a> { file: std::sync::MutexGuard<'a, std::fs::File> }
+impl<'a> FileGuard<'a> {
+    fn acquire(file: &'a std::sync::Mutex<std::fs::File>, exclusive: bool) -> Result<Self, StateError> {
+        let file = match file.try_lock() {
+            Ok(file) => file,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return Err(StateError::Locked),
+        };
+        let lock = if exclusive { file.try_lock() } else { file.try_lock_shared() };
+        lock.map_err(|e| match e {
+            std::fs::TryLockError::WouldBlock => StateError::Locked,
+            std::fs::TryLockError::Error(e) => StateError::Io(e),
+        })?;
+        Ok(Self { file })
+    }
+}
+impl Drop for FileGuard<'_> { fn drop(&mut self) { let _ = self.file.unlock(); } }
+
 impl StateHandle {
-    /// Create or open the state file. If empty, initialize with a flat default.
     pub fn open_or_init() -> anyhow::Result<Self> {
         std::fs::create_dir_all(STATE_DIR)?;
         Self::open_at(std::path::Path::new(STATE_FILE))
     }
-
-    /// Open or create a state file at an arbitrary path. `open_or_init` uses the
-    /// real `STATE_FILE`; tests pass a temp path so they never touch system state.
     pub fn open_at(path: &std::path::Path) -> anyhow::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path)?;
-        let meta = file.metadata()?;
-        // Captured before set_len so we can tell a fresh/empty file apart from
-        // an existing pre-224 file that is about to grow (migration case below).
-        let old_len = meta.len();
-        if old_len < STATE_BYTES as u64 {
-            file.set_len(STATE_BYTES as u64)?;
-        }
-
-        let mut mmap = unsafe { MmapOptions::new().len(STATE_BYTES).map_mut(&file)? };
+        let file = std::sync::Mutex::new(OpenOptions::new().read(true).write(true).create(true).open(path)?);
+        let guard = FileGuard::acquire(&file, true)?;
+        let old_len = guard.file.metadata()?.len();
+        if old_len < STATE_BYTES as u64 { guard.file.set_len(STATE_BYTES as u64)?; }
+        let mut mmap = unsafe { MmapOptions::new().len(STATE_BYTES).map_mut(&*guard.file)? };
         let ptr = mmap.as_mut_ptr() as *mut EqState;
-
-        let needs_init = unsafe {
-            let hdr_ver = (&(*ptr).version).load(Ordering::Acquire);
-            hdr_ver == 0 && (*ptr).bands.iter().all(|b| b.freq == 0.0)
-        };
-        if needs_init {
-            let init = EqState::default_flat();
-            unsafe {
-                // version is left at 0; we haven't committed anything yet.
-                std::ptr::copy_nonoverlapping(
-                    &init.bands as *const _,
-                    &mut (*ptr).bands as *mut _,
-                    1,
-                );
-                (*ptr).preamp_db = init.preamp_db;
-                (*ptr).bypass = init.bypass;
-                (*ptr)._pad = init._pad;
-                (*ptr).dynamics = init.dynamics;
-                (*ptr).delay_ms = init.delay_ms;
-                (*ptr)._reserved = init._reserved;
-                // Publish version 2 (even, committed) so readers see the init.
-                (&(*ptr).version).store(2, Ordering::Release);
-            }
-        } else if old_len > 0 && old_len < STATE_BYTES as u64 {
-            // An existing pre-224 file that just grew. Its telemetry block used
-            // to live at offset 192 -- exactly where delay_ms now sits -- so the
-            // newly-mapped delay_ms/telemetry bytes are stale APO telemetry, not
-            // a real delay setting. Force delay_ms to 0 and zero the relocated
-            // telemetry block under a seqlock write so neither a phantom delay
-            // nor a stale `seq` (misread as "APO is live") leaks through.
-            let handle = StateHandle { _mmap: mmap, ptr };
-            handle.write(|w| unsafe {
-                (*w.ptr).delay_ms = 0.0;
-                (*w.ptr)._reserved = [0; 4];
-                (*w.ptr).telemetry = Telemetry::default();
-            });
-            return Ok(handle);
-        }
-
-        Ok(StateHandle { _mmap: mmap, ptr })
-    }
-
-    /// Snapshot the current state (seqlock reader, GUI-side).
-    pub fn snapshot(&self) -> Snapshot {
-        loop {
-            unsafe {
-                let v1 = (&(*self.ptr).version).load(Ordering::Acquire);
-                if v1 & 1 != 0 {
-                    // Writer mid-update. Spin.
-                    std::hint::spin_loop();
-                    continue;
-                }
-                let bands = (*self.ptr).bands;
-                let preamp_db = (*self.ptr).preamp_db;
-                let bypass = (*self.ptr).bypass;
-                let dynamics = (*self.ptr).dynamics;
-                let delay_ms = (*self.ptr).delay_ms;
-                std::sync::atomic::fence(Ordering::Acquire);
-                let v2 = (&(*self.ptr).version).load(Ordering::Acquire);
-                if v1 == v2 {
-                    return Snapshot { version: v2, bands, preamp_db, bypass, dynamics, delay_ms };
-                }
+        unsafe {
+            let version = (*ptr).version.load(Ordering::Acquire);
+            if version == 0 && (*ptr).bands.iter().all(|b| b.freq == 0.0) {
+                let initial = Snapshot::flat(false);
+                publish(ptr, &initial, 2);
+            } else if old_len > 0 && old_len < STATE_BYTES as u64 && version & 1 == 0 {
+                // Old telemetry occupied delay_ms. Migrate only a committed state;
+                // an interrupted legacy file goes through explicit recovery instead.
+                let mut prior = read_snapshot(ptr)?;
+                prior.delay_ms = 0.0;
+                (*ptr).version.store(version.wrapping_add(1), Ordering::Release);
+                std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr)._reserved), [0; 4]);
+                std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).telemetry), Telemetry::default());
+                publish(ptr, &prior, next_even(version));
             }
         }
+        drop(guard);
+        Ok(Self { _mmap: mmap, ptr, file })
     }
 
-    /// Read the APO-written meter telemetry. Volatile (another process writes it)
-    /// and lock-free — meter tearing is cosmetic, so no seqlock. `seq == 0` means
-    /// the APO has never written (e.g. an APO build without telemetry support).
+    /// Bounded, coherent read. A dead writer cannot hang its caller.
+    pub fn snapshot(&self) -> Result<Snapshot, StateError> {
+        let _guard = FileGuard::acquire(&self.file, false)?;
+        unsafe { read_snapshot(self.ptr) }
+    }
+    /// APO owns this block; no Rust writer lock is involved in meter reads.
     pub fn telemetry(&self) -> Telemetry {
         unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*self.ptr).telemetry)) }
     }
 
-    /// Write a new state (seqlock writer).
-    pub fn write(&self, update: impl FnOnce(&mut EqStateWrite)) {
-        unsafe {
-            let ver = (&(*self.ptr).version).fetch_add(1, Ordering::AcqRel); // odd now
-            debug_assert!(ver & 1 == 0);
-            let mut w = EqStateWrite { ptr: self.ptr };
-            update(&mut w);
-            std::sync::atomic::fence(Ordering::Release);
-            (&(*self.ptr).version).fetch_add(1, Ordering::AcqRel); // even now
+    /// Edit a local draft first. A panicking edit cannot leave an odd version or
+    /// partially edited state. Only the short infallible copy is under the seqlock.
+    pub fn write(&self, update: impl FnOnce(&mut EqStateWrite)) -> Result<u64, StateError> {
+        let _guard = FileGuard::acquire(&self.file, true)?;
+        let current = unsafe { read_snapshot(self.ptr)? };
+        let mut draft = EqStateWrite { snapshot: current };
+        update(&mut draft);
+        unsafe { self.replace(current.version, &draft.snapshot) }
+    }
+
+    /// Explicit user recovery. Never steals an active writer's OS lock or applies
+    /// a recovery decision made against a different state version.
+    pub fn recover(&self, expected_version: u64, replacement: &Snapshot) -> Result<u64, StateError> {
+        replacement.validate_recovery().map_err(StateError::Invalid)?;
+        let _guard = FileGuard::acquire(&self.file, true)?;
+        unsafe { self.replace(expected_version, replacement) }
+    }
+    unsafe fn replace(&self, expected: u64, replacement: &Snapshot) -> Result<u64, StateError> {
+        (*self.ptr).version.compare_exchange(expected, expected | 1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|actual| StateError::Changed { expected, actual })?;
+        let committed = next_even(expected);
+        publish(self.ptr, replacement, committed);
+        Ok(committed)
+    }
+}
+
+fn next_even(version: u64) -> u64 { (version | 1).wrapping_add(1).max(2) }
+unsafe fn read_snapshot(ptr: *mut EqState) -> Result<Snapshot, StateError> {
+    for attempt in 0..64 {
+        let before = (*ptr).version.load(Ordering::Acquire);
+        if before & 1 == 0 {
+            let s = Snapshot {
+                version: before,
+                bands: std::ptr::read_volatile(std::ptr::addr_of!((*ptr).bands)),
+                preamp_db: std::ptr::read_volatile(std::ptr::addr_of!((*ptr).preamp_db)),
+                bypass: std::ptr::read_volatile(std::ptr::addr_of!((*ptr).bypass)),
+                dynamics: std::ptr::read_volatile(std::ptr::addr_of!((*ptr).dynamics)),
+                delay_ms: std::ptr::read_volatile(std::ptr::addr_of!((*ptr).delay_ms)),
+            };
+            std::sync::atomic::fence(Ordering::Acquire);
+            if (*ptr).version.load(Ordering::Acquire) == before { return Ok(s); }
         }
+        if attempt % 8 == 7 { std::thread::yield_now(); } else { std::hint::spin_loop(); }
     }
+    Err(StateError::Busy { version: (*ptr).version.load(Ordering::Acquire) })
+}
+unsafe fn publish(ptr: *mut EqState, s: &Snapshot, version: u64) {
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).bands), s.bands);
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).preamp_db), s.preamp_db);
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).bypass), s.bypass);
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).dynamics), s.dynamics);
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).delay_ms), s.delay_ms);
+    // Preserve padding, reserved bytes, and APO-owned telemetry during normal writes/recovery.
+    (*ptr).version.store(version, Ordering::Release);
 }
 
-pub struct EqStateWrite {
-    ptr: *mut EqState,
-}
-
+pub struct EqStateWrite { snapshot: Snapshot }
 impl EqStateWrite {
-    pub fn set_bands(&mut self, bands: &[Band; NUM_BANDS]) {
-        unsafe { (*self.ptr).bands = *bands; }
-    }
-    pub fn set_bypass(&mut self, on: bool) {
-        unsafe { (*self.ptr).bypass = if on { 1 } else { 0 }; }
-    }
-    pub fn set_preamp(&mut self, db: f32) {
-        unsafe { (*self.ptr).preamp_db = db; }
-    }
-    pub fn set_dynamics(&mut self, d: &Dynamics) {
-        unsafe { (*self.ptr).dynamics = *d; }
-    }
-    pub fn set_delay(&mut self, ms: f32) {
-        unsafe { (*self.ptr).delay_ms = ms; }
-    }
+    pub fn set_bands(&mut self, bands: &[Band; NUM_BANDS]) { self.snapshot.bands = *bands; }
+    pub fn set_bypass(&mut self, on: bool) { self.snapshot.bypass = u8::from(on); }
+    pub fn set_preamp(&mut self, db: f32) { self.snapshot.preamp_db = db; }
+    pub fn set_dynamics(&mut self, d: &Dynamics) { self.snapshot.dynamics = *d; }
+    pub fn set_delay(&mut self, ms: f32) { self.snapshot.delay_ms = ms; }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub version: u64,
     pub bands: [Band; NUM_BANDS],
@@ -353,9 +370,30 @@ pub struct Snapshot {
     pub dynamics: Dynamics,
     pub delay_ms: f32,
 }
-
 impl Snapshot {
     pub fn is_bypassed(&self) -> bool { self.bypass != 0 }
+    pub fn flat(bypass: bool) -> Self {
+        Self { version: 2, bands: std::array::from_fn(|i| Band::flat(DEFAULT_FREQS[i])),
+            preamp_db: 0.0, bypass: u8::from(bypass), dynamics: Dynamics::default_passive(), delay_ms: 0.0 }
+    }
+    pub fn validate_recovery(&self) -> Result<(), String> {
+        let valid = |x: f32, min: f32, max: f32| x.is_finite() && (min..=max).contains(&x);
+        if self.version == 0 || self.version & 1 != 0 || self.bypass > 1 || !valid(self.preamp_db, -60.0, 60.0) || !valid(self.delay_ms, 0.0, 2000.0) {
+            return Err("invalid version, preamp, bypass, or delay".into());
+        }
+        if self.bands.iter().any(|b| !valid(b.freq, 1.0, 192_000.0) || !valid(b.gain, -60.0, 60.0) || !valid(b.q, 0.01, 100.0) || b.kind > 7) {
+            return Err("invalid EQ band".into());
+        }
+        let d = &self.dynamics;
+        if d.comp_enabled > 1 || d.limiter_enabled > 1 || d.agc_enabled > 1 ||
+            !valid(d.comp_threshold_db, -120.0, 24.0) || !valid(d.comp_ratio, 1.0, 100.0) ||
+            !valid(d.comp_attack_ms, 0.0, 10_000.0) || !valid(d.comp_release_ms, 0.0, 10_000.0) ||
+            !valid(d.comp_knee_db, 0.0, 60.0) || !valid(d.comp_makeup_db, -60.0, 60.0) ||
+            !valid(d.limiter_ceiling_db, -120.0, 12.0) || !valid(d.agc_target_db, -120.0, 12.0) || !valid(d.agc_max_gain_db, 0.0, 60.0) {
+            return Err("invalid dynamics settings".into());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -436,7 +474,7 @@ mod tests {
     fn fresh_file_inits_to_flat_default() {
         let p = temp_path("init");
         let h = StateHandle::open_at(&p).unwrap();
-        let s = h.snapshot();
+        let s = h.snapshot().unwrap();
         assert_eq!(s.version, 2); // committed init
         assert_eq!(s.bypass, 0);
         assert_eq!(s.bands[0].freq, DEFAULT_FREQS[0]);
@@ -451,7 +489,7 @@ mod tests {
     fn seqlock_roundtrip() {
         let p = temp_path("roundtrip");
         let h = StateHandle::open_at(&p).unwrap();
-        let v0 = h.snapshot().version;
+        let v0 = h.snapshot().unwrap().version;
 
         let mut bands = [Band::flat(0.0); NUM_BANDS];
         bands[2].gain = 6.5;
@@ -466,9 +504,9 @@ mod tests {
             w.set_bypass(true);
             w.set_dynamics(&dynamics);
             w.set_delay(437.5);
-        });
+        }).unwrap();
 
-        let s = h.snapshot();
+        let s = h.snapshot().unwrap();
         assert!(s.version > v0 && s.version % 2 == 0); // committed (even), advanced
         assert_eq!(s.bands[2].gain, 6.5);
         assert_eq!(s.bands[2].kind, BandKind::Notch as u32);
@@ -486,11 +524,11 @@ mod tests {
         let p = temp_path("reopen");
         {
             let h = StateHandle::open_at(&p).unwrap();
-            h.write(|w| w.set_preamp(7.5));
+            h.write(|w| w.set_preamp(7.5)).unwrap();
         }
         // Reopen the same file: a non-zero committed version must NOT re-init to flat.
         let h2 = StateHandle::open_at(&p).unwrap();
-        assert_eq!(h2.snapshot().preamp_db, 7.5);
+        assert_eq!(h2.snapshot().unwrap().preamp_db, 7.5);
         drop(h2);
         let _ = std::fs::remove_file(&p);
     }
@@ -513,12 +551,64 @@ mod tests {
         std::fs::write(&p, &raw).unwrap();
 
         let h = StateHandle::open_at(&p).unwrap();
-        let s = h.snapshot();
+        let s = h.snapshot().unwrap();
         assert_eq!(s.delay_ms, 0.0);
         // The relocated telemetry block must be cleared too, not carry stale
         // bytes forward (a nonzero seq would look like "the APO is live").
         assert_eq!(h.telemetry().seq, 0);
         drop(h);
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn abandoned_write_is_bounded_and_recovery_preserves_telemetry() {
+        let p = temp_path("abandoned");
+        let h = StateHandle::open_at(&p).unwrap();
+        let mut good = h.snapshot().unwrap(); good.preamp_db = -7.0; good.delay_ms = 250.0; good.bypass = 1;
+        unsafe {
+            (*h.ptr).version.store(3, Ordering::Release);
+            (*h.ptr).preamp_db = 42.0; // partial interrupted update, not a committed sound
+            (*h.ptr).telemetry.seq = 1234;
+            (*h.ptr).telemetry.out_peak = 0.7;
+            (*h.ptr)._reserved = [1, 2, 3, 4];
+        }
+        let start = std::time::Instant::now();
+        assert!(matches!(h.snapshot(), Err(StateError::Busy { version: 3 })));
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        assert!(h.write(|w| w.set_preamp(0.0)).is_err());
+        assert!(matches!(h.recover(5, &good), Err(StateError::Changed { .. })));
+        assert_eq!(h.recover(3, &good).unwrap(), 4);
+        let fixed = h.snapshot().unwrap(); assert_eq!(fixed.preamp_db, -7.0); assert_eq!(fixed.delay_ms, 250.0); assert!(fixed.is_bypassed());
+        assert_eq!(h.telemetry().seq, 1234); assert_eq!(h.telemetry().out_peak, 0.7);
+        assert_eq!(unsafe { (*h.ptr)._reserved }, [1, 2, 3, 4]);
+        drop(h); let _ = std::fs::remove_file(p);
+    }
+    #[test]
+    fn a_panicking_draft_changes_nothing_and_releases_the_writer_lock() {
+        let p = temp_path("panic-draft"); let h = StateHandle::open_at(&p).unwrap(); let before = h.snapshot().unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = h.write(|w| { w.set_preamp(8.0); w.set_delay(999.0); panic!("fixture"); });
+        }));
+        assert!(result.is_err()); assert_eq!(h.snapshot().unwrap(), before);
+        h.write(|w| w.set_preamp(-2.0)).unwrap(); assert_eq!(h.snapshot().unwrap().preamp_db, -2.0);
+        drop(h); let _ = std::fs::remove_file(p);
+    }
+    #[test]
+    fn an_active_writer_cannot_be_stolen_by_recovery_or_another_writer() {
+        let p = temp_path("writer-lock"); let first = StateHandle::open_at(&p).unwrap(); let second = StateHandle::open_at(&p).unwrap();
+        let prior = first.snapshot().unwrap(); let guard = FileGuard::acquire(&first.file, true).unwrap();
+        assert!(matches!(second.snapshot(), Err(StateError::Locked)));
+        assert!(matches!(second.write(|w| w.set_bypass(true)), Err(StateError::Locked)));
+        assert!(matches!(second.recover(prior.version, &Snapshot::flat(true)), Err(StateError::Locked)));
+        drop(guard); assert_eq!(second.snapshot().unwrap(), prior);
+        second.write(|w| w.set_preamp(-3.0)).unwrap(); assert_eq!(first.snapshot().unwrap().preamp_db, -3.0);
+        drop(first); drop(second); let _ = std::fs::remove_file(p);
+    }
+    #[test]
+    fn invalid_recovery_data_is_rejected_without_touching_state() {
+        let p = temp_path("invalid-recovery"); let h = StateHandle::open_at(&p).unwrap(); let before = h.snapshot().unwrap();
+        let mut bad = before; bad.bands[0].gain = f32::NAN;
+        assert!(matches!(h.recover(before.version, &bad), Err(StateError::Invalid(_))));
+        assert_eq!(h.snapshot().unwrap(), before); drop(h); let _ = std::fs::remove_file(p);
     }
 }

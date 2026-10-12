@@ -58,7 +58,13 @@ Old 144/192-byte files are zero-extended on open; telemetry `seq == 0` means an
 APO build that never wrote it. Sound profiles serialize `bands + preamp_db +
 dynamics` to JSON (`profiles/*.json`) — same structs, separate from this file.
 
-**Seqlock protocol:** Writer does `version++` (odd → in-progress), writes bands, `version++` (even → committed). Reader loads version, copies bands, re-loads version; if both reads equal and even, use the bands.
+**Seqlock protocol:** The writer stages a complete draft, publishes an odd
+version while copying it into the mapping, then commits an even version. The
+APO remains lock-free. Rust clients coordinate with nonblocking OS file locks
+and bounded snapshot retries; an abandoned odd version returns an error rather
+than hanging. The GUI offers explicit recovery from a confirmed sound and
+checkpoints completed edits to `state.last-good.json`. Recovery never runs
+implicitly and preserves APO telemetry. See `docs/2026-09-24-state-recovery.md`.
 
 **Why file-backed and not `Local\`/`Global\`**: `audiodg.exe` runs in Session 0 (services), GUI runs in the user session. `Local\*` names don't cross sessions. `Global\*` requires `SeCreateGlobalPrivilege` the GUI doesn't have. A file-backed mapping bridges sessions cleanly.
 
@@ -78,6 +84,18 @@ build.bat
 
 ## One-time dev setup
 
+The live GUI is installed at `%LOCALAPPDATA%\Programs\TrontEQ\tronteq.exe`.
+The `TrontEQ` task launches it with `--startup` ten seconds after user logon,
+at Limited integrity, with no execution limit and ten one-minute failure retries.
+Use `install-user-startup.ps1` to deploy/register it; `dev-cycle.ps1` also copies
+new GUI/CLI builds into that installation before restarting the task. Building
+`target/release` alone does not update the installed copy.
+
+Tray startup uses `tray-icon` 0.25.1 to survive Explorer not being ready. Keep
+its fixed tray GUID stable so the Windows pin persists. Defer startup parking
+past eframe's first paint, which makes the native window visible. Native checks:
+`tools/verify-startup.ps1`; receipt: `target/startup-verification.json`.
+
 Test-signing must be ON (audiodg refuses unsigned APOs). Self-signed cert must be trusted. See `README.md` for the one-shot PowerShell commands.
 
 ## CLSID
@@ -94,9 +112,24 @@ Test-signing must be ON (audiodg refuses unsigned APOs). Self-signed cert must b
 - **RBJ cookbook:** canonical coefficients for Peak / LowShelf / HighShelf. That's all we implement in POC.
 - **Filter recompute only when bands change.** Dirty-flag check at buffer start; skip RBJ math 99% of the time.
 
-## Non-Goals (POC)
+## Current GUI
 
-Spectrum analyzer overlay · preset save/load · bass-boost one-button · per-app EQ · INF-packaged installer · multi-device simultaneous processing · bass_boost field wiring. Listed in the plan as future milestones.
+The inspector has CHAIN, VIZ, DATA, and SETUP tabs. CHAIN provides precise band
+editing, dynamics, separate A/V sync, session undo/redo, and A/B comparison. VIZ
+has a unified 37-scene library, gallery, saved looks, ordered effects, transitions,
+render quality, and presentation mode. Visual undo/redo is separate from sound
+history; Ctrl+Z/Y follows the active inspector. The complete effect stack can be
+enabled/disabled without losing its order or mixes. Sound profiles and visual
+looks are separate. See `docs/2026-09-24-handoff.md` for the completed UI pass.
+
+`audio_format.rs` validates the WASAPI mix format; `audio_analysis.rs` runs
+multichannel analysis and fixed 60 Hz histories on the capture thread.
+`visualizer.rs` handles session lifetime and publishes immutable snapshots. The
+GUI renders those snapshots without advancing the analysis clock. See the dated
+verification notes under `docs/` for behavior and test receipts.
+
+Per-app EQ, INF packaging, and independently controlled simultaneous outputs
+remain outside the current implementation.
 
 ## Reference Projects (SAMPLES/, gitignored)
 

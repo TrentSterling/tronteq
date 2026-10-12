@@ -8,7 +8,7 @@ use eframe::egui;
 use tronteq_shared::Dynamics;
 
 use crate::vizbus::Signal;
-use crate::{curve, devices, glstage, knob, presets, profiler, profiles, show, theme, App};
+use crate::{knob, presets, profiler, profiles, theme, App};
 
 /// Which inspector tab is open. Persisted in settings.json by name.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -18,6 +18,9 @@ pub enum Tab {
     Data,
     Setup,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChainPage { Eq, Dynamics, Sync }
 
 impl Tab {
     pub fn from_str(s: &str) -> Tab {
@@ -39,6 +42,7 @@ impl Tab {
 }
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
+    app.viz_browser.render_stats = app.gl_stage.as_ref().and_then(|stage| stage.try_lock().ok().map(|stage| stage.stats()));
     // Copy locals mutated inside the closure, written back after it closes
     // (avoids borrowing app inside nested egui closures).
     let mut tab = app.tab;
@@ -50,7 +54,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut rainbow = app.rainbow;
     let mut show_mode = app.show.mode;
     let mut show_shuffle = app.show_shuffle;
-    let mut show_fx = app.show_fx;
+    let mut visual = app.viz_settings.clone();
     let mut sel_device = app.selected_device;
     let mut do_apply = false;
     let mut do_refresh = false;
@@ -58,8 +62,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut theme_pick: Option<theme::Palette> = None;
 
     egui::SidePanel::right("chain")
-        .resizable(false)
-        .default_width(264.0)
+        .resizable(true)
+        .min_width(300.0)
+        .default_width(310.0)
+        .max_width(460.0)
         .show(ctx, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -69,31 +75,61 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.selectable_value(&mut tab, Tab::Setup, "SETUP");
             });
             ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                match tab {
-                    Tab::Chain => chain_tab(ui, &mut preamp, &mut d, &mut delay, &mut chain_changed),
-                    Tab::Viz => viz_tab(
-                        ui,
-                        &mut layers,
-                        &mut rainbow,
-                        &mut show_mode,
-                        &mut show_shuffle,
-                        &mut show_fx,
-                    ),
-                    Tab::Data => data_tab(ui, app),
-                    Tab::Setup => setup_tab(
-                        ui,
-                        ctx,
-                        app,
-                        &mut sel_device,
-                        &mut do_apply,
-                        &mut do_refresh,
-                        &mut do_reset_all,
-                        &mut theme_pick,
-                    ),
+            if tab == Tab::Chain {
+                if let Some(sound) = ui.add_enabled_ui(app.state.problem.is_none(), |ui| app.sound_editor.controls(ui)).inner {
+                    app.restore_sound(sound);
+                    preamp = app.preamp_db;
+                    d = app.dynamics;
                 }
-                ui.add_space(8.0);
-            });
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut app.chain_page, ChainPage::Eq, "EQ");
+                    ui.selectable_value(&mut app.chain_page, ChainPage::Dynamics, "Dynamics");
+                    ui.selectable_value(&mut app.chain_page, ChainPage::Sync, "A/V sync");
+                });
+                ui.separator();
+            }
+            if tab == Tab::Viz {
+                if let crate::visualizer::Status::Error(error) = &app.capture.status {
+                    ui.colored_label(egui::Color32::LIGHT_RED, "Visualizer unavailable").on_hover_text(error);
+                    ui.small("Reconnecting to Windows output...");
+                }
+                crate::viz_panel::show(ui, &mut show_mode, &mut visual,
+                    &mut app.viz_browser, &mut layers, &mut show_shuffle, app.gl_stage.is_some());
+                if app.viz_browser.page == crate::viz_panel::Page::Meters { ui.checkbox(&mut rainbow, "Rainbow EQ curve"); }
+            } else {
+                let page_id = (tab.as_str(),
+                    if tab == Tab::Chain { app.chain_page as u8 } else { 0 });
+                egui::ScrollArea::vertical().id_salt(page_id).auto_shrink([false, false]).show(ui, |ui| {
+                    match tab {
+                        Tab::Chain => {
+                            if app.bypass {
+                                ui.colored_label(egui::Color32::from_rgb(255, 170, 90), "Bypass is ON. Disable it in the toolbar to hear changes.");
+                            }
+                            if !app.audio_live {
+                                ui.colored_label(egui::Color32::from_rgb(255, 170, 90), "No live EQ response. Check the output in SETUP.");
+                            }
+                            ui.add_enabled_ui(app.state.problem.is_none(), |ui| match app.chain_page {
+                                ChainPage::Eq => chain_changed |= crate::eq_editor::show(ui, &mut app.bands, &mut app.selected_band, &mut preamp),
+                                ChainPage::Dynamics => chain_tab(ui, &mut preamp, &mut d, &mut chain_changed),
+                                ChainPage::Sync => sync_tab(ui, &mut delay, &mut chain_changed),
+                            });
+                        },
+                        Tab::Viz => unreachable!(),
+                        Tab::Data => data_tab(ui, app),
+                        Tab::Setup => setup_tab(
+                            ui,
+                            ctx,
+                            app,
+                            &mut sel_device,
+                            &mut do_apply,
+                            &mut do_refresh,
+                            &mut do_reset_all,
+                            &mut theme_pick,
+                        ),
+                    }
+                    ui.add_space(8.0);
+                });
+            }
         });
 
     app.tab = tab;
@@ -101,14 +137,18 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     app.rainbow = rainbow;
     app.show.mode = show_mode;
     app.show_shuffle = show_shuffle;
-    app.show_fx = show_fx;
+    app.viz_settings = visual;
+    if std::mem::take(&mut app.viz_browser.present_requested) {
+        let (fullscreen, time) = ctx.input(|i| (i.viewport().fullscreen.unwrap_or(false), i.time));
+        app.presentation.enter(fullscreen, time);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+    }
     app.selected_device = sel_device;
     if let Some(p) = theme_pick {
         theme::set_palette(ctx, p);
     }
     if do_refresh {
-        app.devices = devices::list().unwrap_or_default();
-        app.selected_device = app.selected_device.min(app.devices.len().saturating_sub(1));
+        app.refresh_devices();
     }
     if do_apply {
         app.start_apply();
@@ -125,21 +165,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// The signal chain: preamp + compressor / limiter / auto-loudness knobs and
-/// their per-component presets. Content unchanged from the pre-tab panel.
-fn chain_tab(
-    ui: &mut egui::Ui,
-    preamp: &mut f32,
-    d: &mut Dynamics,
-    delay: &mut f32,
-    changed: &mut bool,
-) {
-    // Semantic accents keep their MEANING (limiter red, A/V-sync amber) but get
-    // walked to a readable lightness for the current chrome - hardcoded literals
-    // are what washed out to nothing on pale themes.
-    let comp_acc = theme::cyan();
-    let lim_acc = theme::readable_ink(egui::Color32::from_rgb(255, 120, 120));
-    let agc_acc = theme::ok();
+/// Output calibration is separate from sound editing, comparison, and undo.
+fn sync_tab(ui: &mut egui::Ui, delay: &mut f32, changed: &mut bool) {
     let sync_acc = theme::readable_ink(egui::Color32::from_rgb(255, 190, 90));
 
     ui.label(egui::RichText::new("A/V SYNC").color(sync_acc).strong());
@@ -165,6 +192,20 @@ fn chain_tab(
     );
     ui.separator();
 
+ }
+
+fn chain_tab(
+    ui: &mut egui::Ui,
+    preamp: &mut f32,
+    d: &mut Dynamics,
+    changed: &mut bool,
+) {
+    // Semantic accents keep their MEANING (limiter red, A/V-sync amber) but get
+    // walked to a readable lightness for the current chrome - hardcoded literals
+    // are what washed out to nothing on pale themes.
+    let comp_acc = theme::cyan();
+    let lim_acc = theme::readable_ink(egui::Color32::from_rgb(255, 120, 120));
+    let agc_acc = theme::ok();
     ui.label(egui::RichText::new("SIGNAL CHAIN").color(theme::cyan()).strong());
     ui.separator();
 
@@ -267,87 +308,30 @@ fn chain_tab(
 /// ANALYZE = the data layers stacked behind the EQ curve. SHOW = full-canvas
 /// eye-candy, one mode at a time, drawn beneath everything.
 #[allow(clippy::too_many_arguments)]
-fn viz_tab(
-    ui: &mut egui::Ui,
-    layers: &mut curve::Layers,
-    rainbow: &mut bool,
-    show_mode: &mut show::ShowMode,
-    show_shuffle: &mut bool,
-    show_fx: &mut u32,
-) {
-    ui.label(egui::RichText::new("ANALYZE").color(theme::cyan()).strong());
-    ui.checkbox(&mut layers.spectrum, "Spectrum bars");
-    ui.checkbox(&mut layers.peak_hold, "Peak-hold caps");
-    ui.checkbox(&mut layers.analyzer, "Analyzer line");
-    ui.checkbox(&mut layers.waterfall, "Spectrogram waterfall");
-    ui.checkbox(&mut layers.waveform, "Waveform");
-    ui.checkbox(&mut layers.goniometer, "Stereo goniometer");
-    ui.checkbox(&mut layers.loudness, "Loudness history");
-    ui.separator();
-    ui.checkbox(rainbow, "Rainbow mode");
-    ui.separator();
-    ui.label(egui::RichText::new("SHOW").color(theme::cyan()).strong());
-    ui.horizontal_wrapped(|ui| {
-        for m in show::ShowMode::ALL.iter().copied().filter(|m| m.gl_mode().is_none()) {
-            ui.selectable_value(show_mode, m, m.label());
-        }
+fn output_picker(ui: &mut egui::Ui, devices: &[crate::devices::Device], sel_device: &mut usize, busy: bool) {
+    let selected = devices
+        .get(*sel_device)
+        .map(|d| d.friendly_name.clone())
+        .unwrap_or_else(|| "No active outputs".to_string());
+    ui.add_enabled_ui(!busy && !devices.is_empty(), |ui| {
+        egui::ComboBox::from_id_salt("device_picker")
+            .selected_text(selected)
+            .truncate()
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                for (i, dev) in devices.iter().enumerate() {
+                    let label = if dev.is_default {
+                        format!("{}  (default)", dev.friendly_name)
+                    } else {
+                        dev.friendly_name.clone()
+                    };
+                    ui.selectable_value(sel_device, i, label).on_hover_text(&dev.id);
+                }
+            });
     });
-    ui.label(egui::RichText::new("SHOW GL (shaders)").color(theme::cyan()).strong());
-    ui.horizontal_wrapped(|ui| {
-        for m in show::ShowMode::ALL.iter().copied().filter(|m| m.gl_mode().is_some()) {
-            ui.selectable_value(show_mode, m, m.label());
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.checkbox(show_shuffle, "Shuffle")
-            .on_hover_text("Auto-cycle through the GL modes every ~18s");
-        if ui.button("🎲 Random").on_hover_text("Jump to a random GL mode now").clicked() {
-            let gl_modes: Vec<show::ShowMode> =
-                show::ShowMode::ALL.iter().copied().filter(|m| m.gl_mode().is_some()).collect();
-            if !gl_modes.is_empty() {
-                let seed = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.subsec_nanos())
-                    .unwrap_or(0);
-                *show_mode = gl_modes[seed as usize % gl_modes.len()];
-            }
-        }
-    });
-    ui.label(
-        egui::RichText::new("One at a time. Beat-reactive, draws under the analyzers - turn ANALYZE layers off for pure eye candy.")
-            .color(theme::muted())
-            .small(),
-    );
-    ui.separator();
-    ui.label(egui::RichText::new("FX (stackable)").color(theme::cyan()).strong());
-    ui.horizontal_wrapped(|ui| {
-        for (bit, label) in [
-            (glstage::FX_MIRROR, "Mirror"),
-            (glstage::FX_ZOOMBLUR, "Zoom blur"),
-            (glstage::FX_ABERRATION, "Aberration"),
-            (glstage::FX_PIXELATE, "Pixelate"),
-            (glstage::FX_HALFTONE, "Halftone"),
-            (glstage::FX_SCANLINES, "Scanlines"),
-            (glstage::FX_GRAIN, "Grain"),
-            (glstage::FX_STROBE, "Strobe"),
-            (glstage::FX_EDGEGLOW, "Edge glow"),
-            (glstage::FX_THERMAL, "Thermal"),
-        ] {
-            let active = (*show_fx & bit) != 0;
-            if ui.selectable_label(active, label).clicked() {
-                *show_fx ^= bit;
-            }
-        }
-    });
-    ui.label(
-        egui::RichText::new("Any combination, layered over any SHOW GL mode above.")
-            .color(theme::muted())
-            .small(),
-    );
 }
 
 /// Output device install flow + UI prefs + maintenance + status readouts.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn setup_tab(
     ui: &mut egui::Ui,
@@ -362,27 +346,10 @@ fn setup_tab(
     let busy = app.apply_rx.is_some();
 
     ui.label(egui::RichText::new("OUTPUT").color(theme::cyan()).strong());
-    let selected = app
-        .devices
-        .get(*sel_device)
-        .map(|d| d.name.clone())
-        .unwrap_or_else(|| "-".to_string());
-    egui::ComboBox::from_id_salt("device_picker")
-        .selected_text(selected)
-        .width(ui.available_width() - 8.0)
-        .show_ui(ui, |ui| {
-            for (i, dev) in app.devices.iter().enumerate() {
-                let label = if dev.is_default {
-                    format!("{}  (default)", dev.name)
-                } else {
-                    dev.name.clone()
-                };
-                ui.selectable_value(sel_device, i, label);
-            }
-        });
+    output_picker(ui, &app.devices, sel_device, busy);
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(!busy, egui::Button::new("Apply EQ here"))
+            .add_enabled(!busy && !app.devices.is_empty() && app.device_error.is_none() && app.installer_error.is_none(), egui::Button::new("Apply EQ here"))
             .on_hover_text("Install the APO onto this output (elevated)")
             .clicked()
         {
@@ -399,6 +366,26 @@ fn setup_tab(
             ui.spinner();
         }
     });
+    if let Some(error) = &app.device_error {
+        ui.colored_label(egui::Color32::LIGHT_RED, error);
+    }
+    if let Some(error) = &app.installer_error {
+        ui.colored_label(egui::Color32::LIGHT_RED, error);
+    }
+    if let Some(default) = app.devices.iter().find(|d| d.is_default) {
+        ui.small(format!("Windows output: {}", default.friendly_name));
+        if app.devices.get(*sel_device).is_some_and(|d| d.id != default.id) {
+            ui.small("The visualizer follows the Windows output. Applying EQ does not switch Windows playback.");
+        }
+    }
+    if !app.audio_live {
+        ui.colored_label(egui::Color32::from_rgb(255, 170, 90),
+            "No live EQ response. Play audio; if this persists, apply EQ to the Windows output.");
+    }
+    if app.bypass {
+        ui.colored_label(egui::Color32::from_rgb(255, 170, 90),
+            "Bypass is ON. Disable Bypass in the toolbar to hear changes.");
+    }
     if let Some((ok, msg)) = &app.device_status {
         let color = if *ok {
             egui::Color32::from_rgb(140, 220, 140)
@@ -472,12 +459,13 @@ fn setup_tab(
 
     ui.label(egui::RichText::new("MAINTENANCE").color(theme::cyan()).strong());
     if ui
-        .button("Reset whole chain")
+        .add_enabled(app.state.problem.is_none(), egui::Button::new("Reset sound"))
         .on_hover_text("Flat EQ + 0 preamp + passive dynamics")
         .clicked()
     {
         *do_reset_all = true;
     }
+    ui.label(egui::RichText::new("Sound reset preserves A/V sync delay.").small().color(theme::muted()));
     if ui
         .button("Open profiles folder")
         .on_hover_text(profiles::PROFILE_DIR)
@@ -488,9 +476,13 @@ fn setup_tab(
     ui.separator();
 
     ui.label(egui::RichText::new("STATUS").color(theme::cyan()).strong());
+    if let Some(source) = &app.capture.source { ui.label(format!("Visual source: {}", source.name)); }
+    ui.label(app.capture.description()).on_hover_text(format!("Analysis time: {:.1} s. Analysis runs at 60 Hz independently of drawing. Stereo scope uses the first two channels; spectrum and levels include every channel.", app.capture.frame.ticks as f64 / 60.0));
+    if app.capture.source.is_none() {
+        ui.small(format!("EQ preview uses {} Hz until capture connects.", app.sample_rate as u32));
+    }
     ui.label(format!(
-        "{} Hz  ·  state v{}  ·  {:.0} fps  ·  frame {:.1} ms",
-        app.sample_rate as u32,
+        "state v{}  ·  {:.0} fps  ·  frame {:.1} ms",
         app.state.version(),
         app.fps,
         app.frame_ms,
@@ -500,7 +492,7 @@ fn setup_tab(
 /// The data pipes, live: every VizBus signal as a label + 4s sparkline +
 /// current value. What wiggles here is exactly what a viz mode can be fed.
 fn data_tab(ui: &mut egui::Ui, app: &App) {
-    let b = &app.vizbus;
+    let b = &app.capture.frame.bus;
     let rgba = |c: egui::Color32, a: u8| {
         egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
     };
@@ -537,7 +529,7 @@ fn data_tab(ui: &mut egui::Ui, app: &App) {
     pipe_row(ui, "mid", &format!("{:.2}", b.mid), b, Signal::Mid, theme::viz_hsv(0.33));
     pipe_row(ui, "treble", &format!("{:.2}", b.treble), b, Signal::Treble, theme::viz_hsv(0.66));
     pipe_row(ui, "bright", &format!("{:.2}", b.centroid), b, Signal::Centroid, theme::viz_accent());
-    pipe_row(ui, "loud", &format!("{:.1} dB", b.loud_db), b, Signal::Loud, theme::ok());
+    pipe_row(ui, "level", &format!("{:.1} dBFS", b.loud_db), b, Signal::Loud, theme::ok());
     pipe_row(ui, "crest", &format!("{:.1} dB", b.crest_db), b, Signal::Crest, theme::viz_accent());
     ui.separator();
 
@@ -604,4 +596,41 @@ fn pipe_row(
         }
         ui.label(egui::RichText::new(value).small());
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn output_picker_opens_and_selects_a_device() {
+        let devices = vec![
+            crate::devices::Device { id: "tv".into(), friendly_name: "Beyond TV".into(), is_default: true },
+            crate::devices::Device { id: "headphones".into(), friendly_name: "Headphones".into(), is_default: false },
+        ];
+        let mut harness = Harness::builder().with_size(egui::vec2(800.0, 600.0))
+            .build_ui_state(|ui, selected| output_picker(ui, &devices, selected, false), 0usize);
+        harness.get_by_value("Beyond TV").click();
+        harness.run();
+        harness.get_by_label("Headphones").click();
+        harness.run();
+        assert_eq!(*harness.state(), 1);
+    }
+
+    #[test]
+    fn chain_delay_buttons_change_and_reset() {
+        let mut harness = Harness::builder().with_size(egui::vec2(350.0, 1400.0))
+            .build_ui_state(|ui, state| {
+                let (_, _, delay, changed) = state;
+                sync_tab(ui, delay, changed);
+            }, (0.0, Dynamics::default(), 0.0, false));
+        harness.get_by_label("+25").click();
+        harness.run();
+        assert_eq!(harness.state().2, 25.0);
+        assert!(harness.state().3);
+        harness.get_by_label("Reset 0").click();
+        harness.run();
+        assert_eq!(harness.state().2, 0.0);
+    }
 }

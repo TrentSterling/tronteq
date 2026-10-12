@@ -6,6 +6,7 @@ SAMPLES/
 *.cer
 state.bin
 Cargo.lock
+!/Cargo.lock
 
 # scratch / logs
 *.log
@@ -13,3 +14,4 @@ killlog.txt
 tmp_*.png
 harness_shots/
 dev-cycle.log
+__pycache__/

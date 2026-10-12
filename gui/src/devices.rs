@@ -1,15 +1,13 @@
 //! Output-device picker plumbing. The GUI runs at MEDIUM integrity (asInvoker),
 //! so the privileged work — `tronteq-cli install`, which writes HKLM FxProperties
 //! and restarts audiosrv — is launched ELEVATED via ShellExecuteExW "runas" (one
-//! UAC prompt per apply; device retargets are rare). Unprivileged commands like
-//! `list-devices` still spawn plainly. An elevated child's stdout can't be piped
+//! UAC prompt per apply; device retargets are rare). Device enumeration queries
+//! Windows directly. An elevated child's stdout can't be piped
 //! back across the integrity boundary, so `apply` routes output through a log
 //! file in ProgramData and reads it back after the child exits.
 
 use anyhow::{bail, Context, Result};
-use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
 
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -19,69 +17,46 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000; // keep the CLI's console from flashing
-
 /// Where the elevated install's combined stdout+stderr lands so we can read it
 /// back from Medium. Lives beside state.bin, which install itself ACLs open.
 const INSTALL_LOG: &str = r"C:\ProgramData\TrontEq\install.log";
 
-#[derive(Clone)]
-pub struct Device {
-    pub index: usize,
-    pub name: String,
-    pub is_default: bool,
+pub use tronteq_shared::endpoints::{Endpoint as Device, selected_index};
+
+fn cli_path() -> Result<PathBuf> {
+    let path = std::env::current_exe().context("locate TrontEQ")?
+        .parent().context("locate TrontEQ folder")?.join("tronteq-cli.exe");
+    if !path.is_file() {
+        bail!("Missing {}. Build or reinstall both TrontEQ executables before applying EQ.", path.display());
+    }
+    Ok(path)
 }
 
-fn cli_path() -> PathBuf {
-    // tronteq-cli.exe sits next to tronteq.exe in the build/release dir.
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("tronteq-cli.exe")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from("tronteq-cli.exe"))
+pub fn installer_error() -> Option<String> {
+    cli_path().err().map(|e| format!("{e:#}"))
 }
 
-/// Parse `tronteq-cli list-devices` into structured rows. Device enumeration is
-/// unprivileged, so this stays a plain spawn (no UAC).
+/// Query Windows directly. A missing installer must never hide the outputs.
 pub fn list() -> Result<Vec<Device>> {
-    let out = Command::new(cli_path())
-        .arg("list-devices")
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .context("run list-devices")?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut devices = Vec::new();
-    for line in text.lines() {
-        let l = line.trim_start();
-        // "[0] Headphones (Smokin' Buds) [default]"
-        let Some(rest) = l.strip_prefix('[') else { continue };
-        let Some((idx, name)) = rest.split_once(']') else { continue };
-        let Ok(index) = idx.trim().parse::<usize>() else { continue };
-        let name = name.trim();
-        let is_default = name.ends_with("[default]");
-        let name = name.trim_end_matches("[default]").trim().to_string();
-        devices.push(Device { index, name, is_default });
-    }
-    if devices.is_empty() {
-        bail!("could not parse any output devices from tronteq-cli");
-    }
-    Ok(devices)
+    tronteq_shared::endpoints::list_render_endpoints()
 }
 
-/// Apply the full APO recipe to the device at `index` (runs `install --device`
+/// Apply the full APO recipe to a stable endpoint ID (runs `install --device-id`
 /// ELEVATED — expect one UAC prompt; a declined prompt reads as a friendly error,
 /// not a crash).
-pub fn apply(index: usize) -> Result<String> {
+pub fn apply(endpoint_id: &str) -> Result<String> {
+    let cli = cli_path()?;
     let _ = std::fs::remove_file(INSTALL_LOG);
-    // cmd /c "<cli>" install --device N > <log> 2>&1  — the outer quotes are
+    // cmd /c "<cli>" install --device-id ID > <log> 2>&1; the outer quotes are
     // cmd's own re-quoting rule for a quoted program path plus redirection.
     let params = format!(
-        "/c \"\"{}\" install --device {} > \"{}\" 2>&1\"",
-        cli_path().display(),
-        index,
+        "/c \"\"{}\" install --device-id {} > \"{}\" 2>&1\"",
+        cli.display(),
+        endpoint_id,
         INSTALL_LOG
     );
-    let code = run_elevated("cmd.exe", &params)
+    let cmd = std::env::var("SystemRoot").context("SystemRoot")? + r"\System32\cmd.exe";
+    let code = run_elevated(&cmd, &params)
         .context("launch elevated install (UAC declined?)")?;
     let log = std::fs::read_to_string(INSTALL_LOG).unwrap_or_default();
     if code != 0 {

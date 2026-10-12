@@ -33,10 +33,9 @@
 # with the new machine-local cert.
 #
 # Every step is gated behind a state check, so re-running this on an
-# already-set-up machine (e.g. the main PC) is a no-op that reports
-# "already set up" -- it does not redo bcdedit, does not regenerate an
-# existing cert, and does not re-run install/autostart/launch if they're
-# already in place.
+# already-set-up machine does not redo bcdedit, regenerate an existing cert,
+# or reinstall the APO. Startup registration is refreshed so older tasks receive
+# the current tray arguments and settings; a running GUI is left in place.
 
 [CmdletBinding()]
 param()
@@ -222,18 +221,17 @@ if ($clsidPresent -and $dllInstalled) {
 
 $taskQuery = schtasks /query /tn $taskName 2>&1 | Out-String
 $taskExists = $taskQuery -notmatch 'ERROR'
-if ($taskExists) {
-    Log "[phase2] autostart task '$taskName' already registered -- skipping"
-} else {
-    Log "[phase2] registering autostart..."
-    & $cliExe register-autostart 2>&1 | ForEach-Object { Log "  $_" }
-}
+# Refresh existing tasks too: releases before 0.13 lack --startup, shell delay,
+# failure retries, and the unlimited runtime needed for a persistent tray app.
+Log "[phase2] registering/updating autostart..."
+& $cliExe register-autostart 2>&1 | ForEach-Object { Log "  $_" }
+if ($LASTEXITCODE -ne 0) { throw 'Could not update the TrontEQ startup task.' }
 
 $proc = Get-Process tronteq -ErrorAction SilentlyContinue
 if ($proc) {
     Log "[phase2] GUI already running (pid=$($proc.Id)) -- skipping launch"
 } else {
-    Log "[phase2] launching GUI via the autostart scheduled task (elevated, no UAC)..."
+    Log "[phase2] launching GUI in the tray via the normal-user scheduled task..."
     schtasks /run /tn $taskName 2>&1 | ForEach-Object { Log "  $_" }
     Start-Sleep -Seconds 3
     $proc = Get-Process tronteq -ErrorAction SilentlyContinue

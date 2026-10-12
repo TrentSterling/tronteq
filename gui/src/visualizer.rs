@@ -1,95 +1,95 @@
-//! Realtime output visualizer via WASAPI loopback capture of the default render
-//! endpoint (the post-APO audio). Runs on its own thread. Two products for the GUI:
-//!   - `snapshot()`  : a ring of decimated mono samples (scrolling waveform)
-//!   - `spectrum()`  : log-spaced FFT magnitude bars (20 Hz..20 kHz), smoothed
-//! Failures just end the thread (waveform flat / bars zero) — never fatal to the GUI.
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+//! Default-output loopback capture. Publishes coherent audio-clock snapshots.
+use crate::{
+    audio_analysis::{Analyzer, Frame},
+    audio_format::Format,
+};
+use anyhow::{Context, Result};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread::JoinHandle;
-use std::time::Duration;
-
-use rustfft::num_complex::Complex;
-use rustfft::{Fft, FftPlanner};
+use std::time::{Duration, Instant};
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
-    MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX,
 };
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-    COINIT_MULTITHREADED,
-};
+use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL};
 
-const RING: usize = 2048; // mono samples retained for the waveform
-const DECIMATE: usize = 6; // keep 1 of every N frames for the waveform ring
-const SILENT_FLAG: u32 = 0x2; // AUDCLNT_BUFFERFLAGS_SILENT
-const STEREO_RING: usize = 1024; // recent [L,R] pairs retained for the goniometer
-const STEREO_DECIMATE: usize = 4; // keep 1 of every N frames for the stereo ring
-
-const FFT_SIZE: usize = 2048; // FFT window length (every frame, non-decimated)
-const FFT_HOP: usize = 512; // recompute the spectrum every N frames (~94 Hz @ 48k)
-pub const NUM_BARS: usize = 64; // log-spaced display bars across 20 Hz..20 kHz
-const F_LO: f32 = 20.0; // lowest bar edge (Hz)
-const F_HI: f32 = 20_000.0; // highest bar edge (Hz)
-const DB_FLOOR: f32 = -78.0; // maps to bar value 0.0
-const DB_CEIL: f32 = -12.0; // maps to bar value 1.0
-const RISE: f32 = 1.0; // instant attack
-const FALL: f32 = 0.80; // exponential decay per hop (lower = snappier fall)
+#[derive(Clone, Debug, PartialEq)]
+pub enum Status {
+    Connecting,
+    Live,
+    Paused,
+    Error(String),
+}
+#[derive(Clone)]
+pub struct Source {
+    pub endpoint_id: String,
+    pub name: String,
+    pub format: Format,
+}
+#[derive(Clone)]
+pub struct Snapshot {
+    pub revision: u64,
+    pub source: Option<Source>,
+    pub status: Status,
+    pub frame: Arc<Frame>,
+}
+impl Snapshot {
+    pub fn empty() -> Self {
+        Self {
+            revision: 0,
+            source: None,
+            status: Status::Connecting,
+            frame: Arc::new(Analyzer::new(48_000, 2).snapshot()),
+        }
+    }
+    pub fn description(&self) -> String {
+        match (&self.status, &self.source) {
+            (Status::Live, Some(s)) => format!(
+                "{} Hz · {} channels · {}",
+                s.format.rate,
+                s.format.channels,
+                s.format.label()
+            ),
+            (Status::Paused, _) => "Visualizer paused".into(),
+            (Status::Error(e), _) => format!("Visualizer unavailable: {e}"),
+            _ => "Connecting to Windows output...".into(),
+        }
+    }
+}
 
 pub struct Visualizer {
-    samples: Arc<Mutex<Vec<f32>>>,
-    spectrum: Arc<Mutex<Vec<f32>>>,
-    level: Arc<Mutex<(f32, f32)>>, // (rms, peak), both 0.0..~1.0
-    stereo: Arc<Mutex<Vec<[f32; 2]>>>, // recent [L, R] pairs for the goniometer
+    shared: Arc<Mutex<Snapshot>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
-
 impl Visualizer {
-    /// `paused` is owned by the app (the tray hide/show sites flip it). While it
-    /// is set, no loopback session exists at all: the capture client is released
-    /// rather than merely ignored, so a tray'd TrontEQ holds no WASAPI client and
-    /// wakes only to read this flag. Nothing consumes the spectrum while the
-    /// window is off screen, so every sample captured there was waste.
+    /// A hidden-to-tray app releases its loopback client completely.
     pub fn start(paused: Arc<AtomicBool>) -> Self {
-        let samples = Arc::new(Mutex::new(vec![0.0f32; RING]));
-        let spectrum = Arc::new(Mutex::new(vec![0.0f32; NUM_BARS]));
-        let level = Arc::new(Mutex::new((0.0f32, 0.0f32)));
-        let stereo = Arc::new(Mutex::new(vec![[0.0f32; 2]; STEREO_RING]));
+        let shared = Arc::new(Mutex::new(Snapshot::empty()));
         let stop = Arc::new(AtomicBool::new(false));
-        let s2 = samples.clone();
-        let sp2 = spectrum.clone();
-        let lv2 = level.clone();
-        let stx = stereo.clone();
-        let stop2 = stop.clone();
-        let handle = std::thread::spawn(move || unsafe {
+        let (output, stopping) = (shared.clone(), stop.clone());
+        let handle = std::thread::spawn(move || {
             crate::log_line(&format!("thread: viz-capture tid={}", crate::tid()));
-            let _ = capture_loop(&s2, &sp2, &lv2, &stx, &stop2, &paused);
+            if let Err(e) = unsafe { capture_loop(&output, &stopping, &paused) } {
+                publish_status(&output, Status::Error(format!("{e:#}")));
+            }
         });
-        Visualizer { samples, spectrum, level, stereo, stop, handle: Some(handle) }
+        Self {
+            shared,
+            stop,
+            handle: Some(handle),
+        }
     }
-
-    /// Decimated mono ring for the scrolling waveform backdrop.
-    pub fn snapshot(&self) -> Vec<f32> {
-        self.samples.lock().map(|s| s.clone()).unwrap_or_default()
-    }
-
-    /// `NUM_BARS` log-spaced magnitude bars in 0.0..=1.0 (already smoothed).
-    pub fn spectrum(&self) -> Vec<f32> {
-        self.spectrum.lock().map(|s| s.clone()).unwrap_or_default()
-    }
-
-    /// Current output (rms, peak) linear levels, ~0.0..1.0.
-    pub fn level(&self) -> (f32, f32) {
-        self.level.lock().map(|l| *l).unwrap_or((0.0, 0.0))
-    }
-
-    /// Recent decimated [L, R] sample pairs for the stereo goniometer.
-    pub fn stereo(&self) -> Vec<[f32; 2]> {
-        self.stereo.lock().map(|s| s.clone()).unwrap_or_default()
+    pub fn read(&self) -> Snapshot {
+        self.shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
-
 impl Drop for Visualizer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -99,318 +99,292 @@ impl Drop for Visualizer {
     }
 }
 
-fn push_stereo(buf: &mut Vec<[f32; 2]>, v: [f32; 2]) {
-    buf.push(v);
-    let len = buf.len();
-    if len > STEREO_RING {
-        buf.drain(0..len - STEREO_RING);
+fn publish_status(shared: &Mutex<Snapshot>, status: Status) {
+    let mut snapshot = shared.lock().unwrap_or_else(|e| e.into_inner());
+    if snapshot.status == status {
+        return;
     }
+    let revision = snapshot.revision.wrapping_add(1);
+    *snapshot = Snapshot {
+        revision,
+        status,
+        ..Snapshot::empty()
+    };
 }
-
-/// Endpoint id string of a render device (the returned PWSTR is freed). None on
-/// failure. Used to notice when the *default* endpoint changes out from under a
-/// live loopback session (a default swap does NOT error the session).
-unsafe fn endpoint_id(device: &IMMDevice) -> Option<String> {
-    let pw = device.GetId().ok()?;
-    let s = pw.to_string().ok();
-    CoTaskMemFree(Some(pw.0 as *const core::ffi::c_void));
-    s
+fn publish(shared: &Mutex<Snapshot>, source: &Source, analysis: &Analyzer) {
+    // FFTs and history updates never hold the shared lock.
+    let frame = Arc::new(analysis.snapshot());
+    let mut output = shared.lock().unwrap_or_else(|e| e.into_inner());
+    *output = Snapshot {
+        revision: output.revision.wrapping_add(1),
+        source: Some(source.clone()),
+        status: Status::Live,
+        frame,
+    };
 }
-
-fn push_ring(buf: &mut Vec<f32>, v: f32) {
-    buf.push(v);
-    let len = buf.len();
-    if len > RING {
-        buf.drain(0..len - RING);
-    }
+unsafe fn endpoint_id(device: &IMMDevice) -> Result<String> {
+    let raw = device.GetId()?;
+    let value = raw.to_string();
+    CoTaskMemFree(Some(raw.0.cast()));
+    Ok(value?)
 }
-
-/// Precompute the log-spaced bar edges (NUM_BARS+1 frequencies, 20 Hz..20 kHz).
-fn bar_edges() -> Vec<f32> {
-    let ratio = (F_HI / F_LO).log10(); // decades spanned (~3.0)
-    (0..=NUM_BARS)
-        .map(|b| F_LO * 10f32.powf(ratio * b as f32 / NUM_BARS as f32))
-        .collect()
-}
-
-/// Hann window of length FFT_SIZE.
-fn hann_window() -> Vec<f32> {
-    let n = FFT_SIZE as f32;
-    (0..FFT_SIZE)
-        .map(|k| 0.5 - 0.5 * (std::f32::consts::TAU * k as f32 / (n - 1.0)).cos())
-        .collect()
-}
-
-/// Read the oldest-first window from the ring, window it, FFT, fold into log bars
-/// and smooth (instant rise, exponential fall). `bars` holds the persistent state.
-#[allow(clippy::too_many_arguments)]
-fn compute_spectrum(
-    ring: &[f32],
-    pos: usize,
-    fft: &Arc<dyn Fft<f32>>,
-    work: &mut [Complex<f32>],
-    scratch: &mut [Complex<f32>],
-    hann: &[f32],
-    edges: &[f32],
-    sample_rate: f32,
-    bars: &mut [f32],
-) {
-    for k in 0..FFT_SIZE {
-        let s = ring[(pos + k) % FFT_SIZE];
-        work[k] = Complex { re: s * hann[k], im: 0.0 };
-    }
-    fft.process_with_scratch(work, scratch);
-
-    // Magnitude reference: a full-scale sine through a Hann window peaks near
-    // FFT_SIZE/4, so dividing by that puts 0 dBFS tones at ~0 dB.
-    let norm = FFT_SIZE as f32 / 4.0;
-    let hz_per_bin = sample_rate / FFT_SIZE as f32;
-    let nyq_bin = FFT_SIZE / 2 - 1;
-
-    for b in 0..NUM_BARS {
-        // clamp BOTH ends to the valid bin range: a tiny/garbage reported sample
-        // rate makes hz_per_bin ~0 and these indices saturate -> work[bin] OOB panic.
-        let lo = ((edges[b] / hz_per_bin).floor() as usize).clamp(1, nyq_bin);
-        let hi = ((edges[b + 1] / hz_per_bin).ceil() as usize).clamp(lo, nyq_bin);
-        let mut peak = 0.0f32;
-        for bin in lo..=hi {
-            peak = peak.max(work[bin].norm());
+/// Frees GetMixFormat even when format validation or Initialize fails.
+struct MixFormat(*mut WAVEFORMATEX);
+impl Drop for MixFormat {
+    fn drop(&mut self) {
+        unsafe {
+            CoTaskMemFree(Some(self.0.cast()));
         }
-        let db = 20.0 * (peak / norm).max(1e-9).log10();
-        let target = ((db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)).clamp(0.0, 1.0);
-        bars[b] = if target >= bars[b] {
-            bars[b] + (target - bars[b]) * RISE
-        } else {
-            bars[b] * FALL + target * (1.0 - FALL)
-        };
+    }
+}
+struct RunningClient(IAudioClient);
+impl Drop for RunningClient {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.0.Stop();
+        }
     }
 }
 
-/// Owns COM for the capture thread and keeps re-acquiring the default endpoint
-/// whenever a session ends — a session dies whenever the audio graph is rebuilt
-/// (device change, format change, toggling Windows audio enhancements like
-/// Loudness Equalization). Without this the visualizer would freeze permanently
-/// after any such event; now it recovers within ~0.5s on its own.
 unsafe fn capture_loop(
-    samples: &Arc<Mutex<Vec<f32>>>,
-    spectrum: &Arc<Mutex<Vec<f32>>>,
-    level: &Arc<Mutex<(f32, f32)>>,
-    stereo: &Arc<Mutex<Vec<[f32; 2]>>>,
-    stop: &Arc<AtomicBool>,
-    paused: &Arc<AtomicBool>,
-) -> windows::core::Result<()> {
-    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    let mut logged_pause = false;
+    shared: &Mutex<Snapshot>,
+    stop: &AtomicBool,
+    paused: &AtomicBool,
+) -> Result<()> {
+    let _com = tronteq_shared::endpoints::ComGuard::new()?;
     while !stop.load(Ordering::Relaxed) {
-        // Tray'd: hold no session and no capture client, just tick on the flag.
-        // 100ms is well under any perceptible delay on the way back and costs
-        // nothing (10 atomic loads a second in a sleeping thread).
         if paused.load(Ordering::Relaxed) {
-            if !logged_pause {
-                logged_pause = true;
-                crate::log_line("viz: paused (tray'd) - loopback session released");
-            }
+            publish_status(shared, Status::Paused);
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
-        if std::mem::take(&mut logged_pause) {
-            crate::log_line("viz: resumed - re-acquiring loopback session");
+        match run_session(shared, stop, paused) {
+            Err(e) => {
+                let message = format!("{e:#}");
+                crate::log_line(&format!("viz: {message}"));
+                publish_status(shared, Status::Error(message));
+            }
+            Ok(()) => publish_status(
+                shared,
+                if paused.load(Ordering::Relaxed) {
+                    Status::Paused
+                } else {
+                    Status::Connecting
+                },
+            ),
         }
-        if let Err(e) = run_session(samples, spectrum, level, stereo, stop, paused) {
-            crate::log_line(&format!("viz: capture session ended with error: {e:?}"));
+        for _ in 0..5 {
+            if stop.load(Ordering::Relaxed) || paused.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        // Session ended (error or stop). Flatten the viz so it doesn't show stale
-        // bars/levels, then pause before re-acquiring the (possibly new) default.
-        if let Ok(mut sp) = spectrum.lock() {
-            sp.iter_mut().for_each(|v| *v = 0.0);
-        }
-        if let Ok(mut lv) = level.lock() {
-            *lv = (0.0, 0.0);
-        }
-        if let Ok(mut st) = stereo.lock() {
-            st.iter_mut().for_each(|v| *v = [0.0, 0.0]);
-        }
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        // The 500ms breather is for a FAILED session (device invalidated, format
-        // change): don't hammer the enumerator. A session that ended because we
-        // were tray'd is not a failure, and the pause tick above is the wait.
-        if paused.load(Ordering::Relaxed) {
-            continue;
-        }
-        std::thread::sleep(Duration::from_millis(500));
     }
-    CoUninitialize();
     Ok(())
 }
-
-/// One capture session against the current default render endpoint. Returns Err
-/// (triggering a re-acquire in `capture_loop`) when the device is invalidated.
+/// No packets can arrive when Windows has no playing streams. Advance silence
+/// after a buffer grace period, bounded after a long thread stall.
+#[derive(Default)]
+struct IdleClock {
+    emitted: u64,
+}
+impl IdleClock {
+    fn frames(&mut self, elapsed: Duration, rate: u32) -> usize {
+        if elapsed < Duration::from_millis(100) {
+            return 0;
+        }
+        let total = (elapsed.as_secs_f64() * rate as f64) as u64;
+        let frames = total.saturating_sub(self.emitted).min(rate as u64 / 4);
+        self.emitted = total;
+        frames as usize
+    }
+}
 unsafe fn run_session(
-    samples: &Arc<Mutex<Vec<f32>>>,
-    spectrum: &Arc<Mutex<Vec<f32>>>,
-    level: &Arc<Mutex<(f32, f32)>>,
-    stereo: &Arc<Mutex<Vec<[f32; 2]>>>,
-    stop: &Arc<AtomicBool>,
-    paused: &Arc<AtomicBool>,
-) -> windows::core::Result<()> {
+    shared: &Mutex<Snapshot>,
+    stop: &AtomicBool,
+    paused: &AtomicBool,
+) -> Result<()> {
     let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-    let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
-    let opened_id = endpoint_id(&device);
-    crate::log_line(&format!(
-        "viz: capture session on default endpoint {}",
-        opened_id.as_deref().unwrap_or("<unknown>")
-    ));
+    let device = enumerator
+        .GetDefaultAudioEndpoint(eRender, eConsole)
+        .context("Windows output is unavailable")?;
+    let id = endpoint_id(&device)?;
+    let name = tronteq_shared::endpoints::list_render_endpoints()
+        .ok()
+        .and_then(|devices| devices.into_iter().find(|d| d.id == id))
+        .map(|d| d.friendly_name)
+        .unwrap_or_else(|| id.clone());
     let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-
-    let pfmt = client.GetMixFormat()?;
-    let channels = (*pfmt).nChannels as usize;
-    let sample_rate = (*pfmt).nSamplesPerSec as f32;
-    // Shared-mode mix is virtually always 32-bit float (tag 3, or EXTENSIBLE 0xFFFE).
-    let is_float = (*pfmt).wFormatTag == 3 || (*pfmt).wFormatTag == 0xFFFE;
-    let bps = ((*pfmt).wBitsPerSample / 8) as usize;
-
+    let raw = MixFormat(client.GetMixFormat()?);
+    anyhow::ensure!(!raw.0.is_null(), "Windows returned an empty audio format");
+    let bytes = std::slice::from_raw_parts(raw.0.cast::<u8>(), 18 + (*raw.0).cbSize as usize);
+    let format = Format::parse(bytes).map_err(anyhow::Error::msg)?;
     client.Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_LOOPBACK,
-        2_000_000, // 200 ms buffer
+        2_000_000,
         0,
-        pfmt,
+        raw.0,
         None,
     )?;
+    drop(raw);
     let capture: IAudioCaptureClient = client.GetService()?;
     client.Start()?;
-    CoTaskMemFree(Some(pfmt as *const core::ffi::c_void));
-
-    // channels also bounded above: an absurd/garbage nChannels would make the
-    // `i*channels + c` reads walk far out of bounds.
-    let usable = is_float && bps == 4 && channels > 0 && channels <= 64;
-
-    // FFT machinery + persistent ring/state (thread-local, no locks on the hot path).
-    let fft = FftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
-    let mut work = vec![Complex { re: 0.0f32, im: 0.0f32 }; FFT_SIZE];
-    let mut scratch = vec![Complex { re: 0.0f32, im: 0.0f32 }; fft.get_inplace_scratch_len()];
-    let hann = hann_window();
-    let edges = bar_edges();
-    let mut fft_ring = vec![0.0f32; FFT_SIZE];
-    let mut fft_pos = 0usize;
-    let mut hop = 0usize;
-    let mut bars = vec![0.0f32; NUM_BARS];
-    let mut peak = 0.0f32; // decaying output peak (linear)
-    let mut msq = 0.0f32; // one-pole mean-square for RMS
-
-    let mut feed = |mono: f32,
-                    fft_ring: &mut [f32],
-                    fft_pos: &mut usize,
-                    hop: &mut usize,
-                    bars: &mut [f32]| {
-        fft_ring[*fft_pos] = mono;
-        *fft_pos = (*fft_pos + 1) % FFT_SIZE;
-        *hop += 1;
-        if *hop >= FFT_HOP {
-            *hop = 0;
-            compute_spectrum(
-                fft_ring, *fft_pos, &fft, &mut work, &mut scratch, &hann, &edges, sample_rate,
-                bars,
-            );
-            if let Ok(mut sp) = spectrum.lock() {
-                sp.copy_from_slice(bars);
-            }
-        }
+    let _running = RunningClient(client);
+    let source = Source {
+        endpoint_id: id,
+        name,
+        format,
     };
-
-    let mut last_default_poll = std::time::Instant::now();
-    while !stop.load(Ordering::Relaxed) {
-        // Tray'd mid-session: tear the session down here rather than idling with
-        // a live client. Dropping out through the normal end-of-session path also
-        // flattens the bars/levels, so nothing stale is on screen when it returns.
-        if paused.load(Ordering::Relaxed) {
-            let _ = client.Stop();
-            return Ok(());
-        }
-        // A default-device SWAP between two still-enabled endpoints does NOT
-        // invalidate a loopback client bound to the old endpoint — it just goes
-        // silent (zero/silent packets, NO error), so the error-driven re-acquire in
-        // capture_loop never fires and the viz freezes on the dead endpoint. Poll
-        // the current default ~2x/sec and bail when it changed so capture_loop
-        // re-acquires the NEW default. (An enhancement toggle / format change still
-        // errors out via `?` as before; this covers the no-error case.)
+    crate::log_line(&format!(
+        "viz: {} at {} Hz, {} channels, {}",
+        source.name,
+        format.rate,
+        format.channels,
+        format.label()
+    ));
+    let mut analysis = Analyzer::new(format.rate, format.channels);
+    publish(shared, &source, &analysis);
+    let mut published_tick = 0;
+    let mut had_packet = false;
+    let mut idle = IdleClock::default();
+    let mut last_packet = Instant::now();
+    let mut last_default_poll = Instant::now();
+    let mut decoded = [0.0; 64];
+    while !stop.load(Ordering::Relaxed) && !paused.load(Ordering::Relaxed) {
         if last_default_poll.elapsed() >= Duration::from_millis(500) {
-            last_default_poll = std::time::Instant::now();
-            if let Ok(cur) = enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
-                let cur_id = endpoint_id(&cur);
-                if let (Some(a), Some(b)) = (&opened_id, &cur_id) {
-                    if a != b {
-                        crate::log_line(&format!(
-                            "viz: default endpoint changed (was {a}, now {b}) -> re-acquiring"
-                        ));
-                        let _ = client.Stop();
-                        return Ok(());
-                    }
-                }
+            last_default_poll = Instant::now();
+            let current = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+            if endpoint_id(&current)? != source.endpoint_id {
+                return Ok(());
             }
         }
-        loop {
-            let packet = capture.GetNextPacketSize()?;
-            if packet == 0 {
-                break;
+        while capture.GetNextPacketSize()? > 0 {
+            if stop.load(Ordering::Relaxed) || paused.load(Ordering::Relaxed) {
+                return Ok(());
             }
-            let mut data: *mut u8 = std::ptr::null_mut();
-            let mut frames = 0u32;
-            let mut flags = 0u32;
+            let (mut data, mut frames, mut flags) = (std::ptr::null_mut(), 0, 0);
             capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None)?;
-            let silent = (flags & SILENT_FLAG) != 0;
-
-            if let Ok(mut buf) = samples.lock() {
-                if usable && !silent && !data.is_null() {
-                    let f = data as *const f32;
-                    let mut st = stereo.lock().ok();
-                    for i in 0..frames as usize {
-                        let mut acc = 0.0f32;
-                        for c in 0..channels {
-                            acc += *f.add(i * channels + c);
-                        }
-                        let mono = acc / channels as f32;
-                        // Sanitize: one NaN/Inf sample (glitchy decoder/plugin) would
-                        // otherwise poison the RMS accumulator + goniometer forever.
-                        let mono = if mono.is_finite() { mono } else { 0.0 };
-                        feed(mono, &mut fft_ring, &mut fft_pos, &mut hop, &mut bars);
-                        peak = (peak * 0.9999).max(mono.abs());
-                        msq = msq * 0.9995 + mono * mono * 0.0005;
-                        if i % DECIMATE == 0 {
-                            push_ring(&mut buf, mono);
-                        }
-                        if i % STEREO_DECIMATE == 0 {
-                            if let Some(st) = st.as_mut() {
-                                let l = *f.add(i * channels);
-                                let r = if channels > 1 { *f.add(i * channels + 1) } else { l };
-                                let l = if l.is_finite() { l } else { 0.0 };
-                                let r = if r.is_finite() { r } else { 0.0 };
-                                push_stereo(&mut **st, [l, r]);
-                            }
-                        }
-                    }
-                } else {
-                    // silence (or unsupported format) -> flatten waveform + decay bars
-                    for i in 0..frames as usize {
-                        feed(0.0, &mut fft_ring, &mut fft_pos, &mut hop, &mut bars);
-                        if i % DECIMATE == 0 {
-                            push_ring(&mut buf, 0.0);
-                        }
-                    }
-                    peak *= 0.6;
-                    msq *= 0.6;
+            if frames == 0 {
+                break;
+            } // AUDCLNT_S_BUFFER_EMPTY: nothing to release.
+            if flags & 1 != 0 && had_packet && idle.emitted == 0 {
+                analysis = Analyzer::new(format.rate, format.channels);
+                published_tick = u64::MAX;
+            }
+            if flags & 2 != 0 || data.is_null() {
+                analysis.silence(frames as usize);
+            } else {
+                let bytes = std::slice::from_raw_parts(data, frames as usize * format.stride);
+                for frame in bytes.chunks_exact(format.stride) {
+                    format.decode(frame, &mut decoded);
+                    analysis.feed(&decoded);
                 }
             }
             capture.ReleaseBuffer(frames)?;
-            if let Ok(mut lv) = level.lock() {
-                *lv = (msq.sqrt().min(1.5), peak.min(1.5));
-            }
+            had_packet = true;
+            last_packet = Instant::now();
+            idle = IdleClock::default();
+        }
+        analysis.silence(idle.frames(last_packet.elapsed(), format.rate));
+        if analysis.ticks != published_tick {
+            published_tick = analysis.ticks;
+            publish(shared, &source, &analysis);
         }
         std::thread::sleep(Duration::from_millis(8));
     }
-
-    let _ = client.Stop();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "Read-only capture of the real Windows default output, including pause/resume"]
+    fn live_capture_publishes_audio_clock_and_releases_while_paused() {
+        let paused = Arc::new(AtomicBool::new(false));
+        let viz = Visualizer::start(paused.clone());
+        let wait = |wanted: Status| {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                let s = viz.read();
+                if s.status == wanted && (wanted != Status::Live || s.frame.ticks > 5) {
+                    return s;
+                }
+                assert!(Instant::now() < deadline, "capture timeout: {:?}", s.status);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let first = wait(Status::Live);
+        println!(
+            "CAPTURE {}: {}",
+            first.source.as_ref().unwrap().name,
+            first.description()
+        );
+        std::thread::sleep(Duration::from_secs(1));
+        let second = viz.read();
+        let elapsed = second.frame.ticks.saturating_sub(first.frame.ticks);
+        assert!(
+            (50..=75).contains(&elapsed),
+            "audio ticks in one second: {elapsed}"
+        );
+        assert!(second.revision > first.revision);
+        assert!(second.frame.spectrum.iter().all(|v| v.is_finite()));
+        println!(
+            "CLOCK {elapsed} ticks; peak {:.5}, rms {:.5}",
+            second.frame.peak, second.frame.rms
+        );
+        paused.store(true, Ordering::Relaxed);
+        let hidden = wait(Status::Paused);
+        assert!(hidden.source.is_none());
+        assert_eq!(hidden.frame.peak, 0.0);
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(viz.read().revision, hidden.revision);
+        paused.store(false, Ordering::Relaxed);
+        let resumed = wait(Status::Live);
+        assert!(resumed.revision > hidden.revision);
+        println!("PAUSE cleared state; RESUME {}", resumed.description());
+    }
+    #[test]
+    fn absent_packets_advance_silence_once_and_bound_stall_work() {
+        let mut idle = IdleClock::default();
+        assert_eq!(idle.frames(Duration::from_millis(90), 48_000), 0);
+        assert_eq!(idle.frames(Duration::from_millis(100), 48_000), 4800);
+        assert_eq!(idle.frames(Duration::from_millis(100), 48_000), 0);
+        assert_eq!(idle.frames(Duration::from_millis(110), 48_000), 480);
+        assert_eq!(idle.frames(Duration::from_secs(60), 48_000), 12_000);
+        assert_eq!(idle.frames(Duration::from_secs(60), 48_000), 0);
+    }
+    #[test]
+    fn failed_or_paused_capture_discards_stale_analysis_and_source() {
+        let shared = Mutex::new(Snapshot::empty());
+        let format = Format {
+            rate: 48_000,
+            channels: 2,
+            stride: 8,
+            encoding: crate::audio_format::Encoding::Float32,
+        };
+        let source = Source {
+            endpoint_id: "fixture".into(),
+            name: "Fixture".into(),
+            format,
+        };
+        let mut analysis = Analyzer::new(48_000, 2);
+        for _ in 0..800 {
+            analysis.feed(&[0.25, -0.25]);
+        }
+        publish(&shared, &source, &analysis);
+        let live = shared.lock().unwrap().clone();
+        assert!(live.frame.peak > 0.2);
+        for status in [Status::Error("device removed".into()), Status::Paused] {
+            publish_status(&shared, status.clone());
+            let read = shared.lock().unwrap().clone();
+            assert_eq!(read.status, status);
+            assert!(read.source.is_none());
+            assert_eq!(read.frame.peak, 0.0);
+            assert!(read.frame.wave.iter().all(|v| *v == 0.0));
+            assert!(read.revision > live.revision);
+        }
+        assert!(live.frame.peak > 0.2, "Published snapshots are immutable");
+    }
 }

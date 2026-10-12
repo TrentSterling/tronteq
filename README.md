@@ -66,6 +66,33 @@ cargo run -p tronteq
 
 Drag a band up, hear the change instantly.
 
+## Start with Windows and keep the tray icon
+
+After the APO is installed, build the GUI and CLI, quit any running TrontEQ,
+and run this from PowerShell:
+
+```powershell
+cargo build --release -p tronteq -p tronteq-cli
+./install-user-startup.ps1
+```
+
+This installs the GUI and CLI under `%LOCALAPPDATA%\Programs\TrontEQ`, adds a
+Start menu shortcut, and updates the `TrontEQ` login task. Updating a protected
+task can require one administrator prompt; the GUI runs as your normal user.
+The task starts ten seconds after sign-in with `--startup`, parks the GUI in
+the tray, has no runtime cutoff or battery restrictions, and retries failed
+runs up to ten times at one-minute intervals. It does not restart an intentional
+Quit. Sound settings and the installed audio processor stay in ProgramData.
+
+Close hides the window; the tray menu or a normal second launch brings it back.
+A stable tray identity preserves the Windows notification-area pin. The tray
+also recovers when Explorer creates or recreates the taskbar.
+
+Run `./tools/verify-startup.ps1` after installation to pin the icon and verify
+startup, duplicate launches, icon recovery, two restore/close cycles, and idle
+CPU while hovering the real tray icon. It leaves the app running in the tray and
+writes `target/startup-verification.json`.
+
 ## Uninstall
 
 ```bash

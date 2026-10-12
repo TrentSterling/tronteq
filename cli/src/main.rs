@@ -26,12 +26,15 @@ enum Command {
     /// Sign (if needed), register the CLSID, and attach the APO to one output device.
     Install {
         /// Index from `list-devices`. If omitted, uses the default output.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "device_id")]
         device: Option<usize>,
+        /// Stable Windows endpoint ID (safe across device reordering).
+        #[arg(long)]
+        device_id: Option<String>,
     },
     /// Detach the APO from all endpoints and unregister the CLSID.
     Uninstall,
-    /// Launch TrontEQ elevated at logon with no UAC (Scheduled Task).
+    /// Start TrontEQ in the system tray at logon (normal user, no UAC).
     RegisterAutostart,
     /// Remove the autostart Scheduled Task.
     UnregisterAutostart,
@@ -43,7 +46,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Check => cmd_check(),
         Command::ListDevices => cmd_list_devices(),
-        Command::Install { device } => cmd_install(device),
+        Command::Install { device, device_id } => cmd_install(device, device_id.as_deref()),
         Command::Uninstall => cmd_uninstall(),
         Command::RegisterAutostart => cmd_register_autostart(),
         Command::UnregisterAutostart => cmd_unregister_autostart(),
@@ -52,7 +55,7 @@ fn main() -> Result<()> {
 
 fn cmd_register_autostart() -> Result<()> {
     setup::register_autostart()?;
-    println!("[ok]  autostart task 'TrontEQ' created — launches elevated at logon, no UAC.");
+    println!("[ok]  autostart task 'TrontEQ' created: starts in the tray at logon, no UAC or runtime limit.");
     Ok(())
 }
 
@@ -105,7 +108,7 @@ fn cmd_list_devices() -> Result<()> {
     Ok(())
 }
 
-fn cmd_install(device_idx: Option<usize>) -> Result<()> {
+fn cmd_install(device_idx: Option<usize>, device_id: Option<&str>) -> Result<()> {
     let state = signing::test_signing_state()?;
     if !matches!(state, signing::TestSigningState::On) {
         anyhow::bail!(
@@ -130,10 +133,12 @@ fn cmd_install(device_idx: Option<usize>) -> Result<()> {
 
     // Resolve the target endpoint up front (need its registry GUID for the EFX slot).
     let endpoints = endpoint::list_render_endpoints()?;
-    let target = match device_idx {
+    let target = if let Some(id) = device_id {
+        endpoints.iter().find(|d| d.id == id).context("selected output is no longer connected; refresh the device list")?
+    } else { match device_idx {
         Some(i) => endpoints.get(i).with_context(|| format!("no device at index {i}"))?,
         None => endpoints.iter().find(|d| d.is_default).context("no default output device")?,
-    };
+    } };
     let ep_guid = setup::endpoint_reg_guid(&target.id)?;
     let target_name = target.friendly_name.clone();
 
@@ -146,7 +151,7 @@ fn cmd_install(device_idx: Option<usize>) -> Result<()> {
     println!("[ok]  APO registered in AudioProcessingObjects store");
 
     // Stop audio so audiodg releases the DLL (a re-install otherwise can't overwrite it).
-    setup::stop_audio()?;
+    let audio = setup::AudioRestartGuard::stop()?;
 
     let dest = format!("{installed}\\TrontEqApo.dll");
     std::fs::copy(&built, &dest).with_context(|| format!("copy DLL to {dest}"))?;
@@ -161,7 +166,7 @@ fn cmd_install(device_idx: Option<usize>) -> Result<()> {
     setup::set_endpoint_efx(&ep_guid)?;
     println!("[ok]  EFX slot -> TrontEQ on: {target_name}");
 
-    setup::start_audio()?;
+    audio.restart()?;
     println!("[ok]  audio service restarted");
     println!();
     println!("If you don't hear EQ yet, disable + re-enable \"{target_name}\" once in");
