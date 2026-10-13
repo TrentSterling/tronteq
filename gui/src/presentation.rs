@@ -7,6 +7,7 @@ pub struct Presentation {
     previous_fullscreen: bool,
     reveal_until: f64,
     last_pointer: Option<egui::Pos2>,
+    pub scene_step: i32,
 }
 
 impl Presentation {
@@ -24,24 +25,28 @@ impl Presentation {
         self.previous_fullscreen
     }
     pub fn input(&mut self, ctx: &egui::Context) {
-        let (escape, f11, fullscreen) = ctx.input(|i| {
+        let (escape, f11, fullscreen, time) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::Escape),
                 i.key_pressed(egui::Key::F11),
                 i.viewport().fullscreen.unwrap_or(false),
+                i.time,
             )
         });
         if self.active && (escape || f11) {
             let restore = self.leave();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(if f11 {
-                false
-            } else {
-                restore
-            }));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
         } else if f11 {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+            self.enter(fullscreen, time);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         } else if escape && fullscreen {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        if self.active {
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::ArrowRight) { self.scene_step = 1; }
+                if i.key_pressed(egui::Key::ArrowLeft) { self.scene_step = -1; }
+            });
         }
     }
     fn reveal(&mut self, time: f64, pointer: Option<egui::Pos2>, key: bool) -> bool {
@@ -72,6 +77,8 @@ impl Presentation {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(scene);
+                            if ui.small_button("Previous").on_hover_text("Previous scene (Left arrow)").clicked() { self.scene_step = -1; }
+                            if ui.small_button("Next").on_hover_text("Next scene (Right arrow)").clicked() { self.scene_step = 1; }
                             if ui.button("Back to controls (Esc)").clicked() {
                                 let restore = self.leave();
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
@@ -121,6 +128,34 @@ mod tests {
         h.key_press(egui::Key::Escape);
         h.run();
         assert!(!h.state().active);
+    }
+    #[test]
+    fn f11_enters_chrome_free_fullscreen_and_both_exit_keys_restore() {
+        for was_fullscreen in [false, true] {
+            for exit_key in [egui::Key::F11, egui::Key::Escape] {
+                let ctx = egui::Context::default();
+                let mut p = Presentation::default();
+                for (key, fullscreen, active, expected) in [
+                    (egui::Key::F11, was_fullscreen, true, true),
+                    (exit_key, true, false, was_fullscreen),
+                ] {
+                    let mut raw = egui::RawInput::default();
+                    raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().fullscreen = Some(fullscreen);
+                    raw.events = vec![egui::Event::Key {
+                        key, physical_key: None, pressed: true, repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }, egui::Event::Key {
+                        key, physical_key: None, pressed: false, repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }];
+                    let out = ctx.run(raw, |ctx| p.input(ctx));
+                    assert_eq!(p.active, active);
+                    assert!(out.viewport_output[&egui::ViewportId::ROOT].commands.iter().any(
+                        |cmd| matches!(cmd, egui::ViewportCommand::Fullscreen(value) if *value == expected)
+                    ));
+                }
+            }
+        }
     }
     #[test]
     fn visible_return_button_exits_presentation() {

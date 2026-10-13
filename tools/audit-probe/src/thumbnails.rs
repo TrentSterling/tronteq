@@ -55,6 +55,7 @@ pub unsafe fn render(gl: &glow::Context) -> Result<(), String> {
                 corr: 0.7,
                 spec: std::array::from_fn(|i| (i as f32 * 0.21 + t).sin().abs() * 0.6 + 0.08),
                 wave: std::array::from_fn(|i| (i as f32 * 0.085 + t).sin() * 0.5),
+                stereo: std::array::from_fn(|i| [(i as f32*0.18+t).sin()*0.3,(i as f32*0.18+t+0.8).sin()*0.3]),
                 ..Default::default()
             };
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -106,6 +107,6 @@ pub unsafe fn render(gl: &glow::Context) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     gl.delete_framebuffer(fbo);
     gl.delete_texture(tex);
-    println!("ATLAS 37/37 production scenes: target/scene-atlas.png");
+    println!("ATLAS {}/{} production scenes: target/scene-atlas.png", scenes.len(), MODE_COUNT);
     Ok(())
 }

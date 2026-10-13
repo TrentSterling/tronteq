@@ -2,15 +2,37 @@
 use crate::{show::ShowMode, viz_looks::Look, viz_settings::VizSettings};
 use eframe::egui;
 
+// Store the active mixer with a visual edit, without cloning the whole setlist every frame.
+#[derive(Clone)]
+struct MixerSnapshot {
+    enabled: bool,
+    deck_b: Option<Look>,
+    crossfade: f32,
+    blend: crate::viz_compositor::Blend,
+    reverse: bool,
+    interaction: crate::viz_compositor::Interaction,
+}
+impl MixerSnapshot {
+    fn capture(p: &crate::viz_performance::Performance) -> Self {
+        Self {enabled:p.enabled,deck_b:p.deck_b.clone(),crossfade:p.crossfade,blend:p.blend,reverse:p.blend_reverse,interaction:p.interaction}
+    }
+    fn apply(self, p: &mut crate::viz_performance::Performance) {
+        p.enabled=self.enabled;p.deck_b=self.deck_b;p.crossfade=self.crossfade;
+        p.blend=self.blend;p.blend_reverse=self.reverse;p.interaction=self.interaction;
+    }
+}
+
 #[derive(Clone)]
 pub struct Edit {
     look: Look,
+    mixer: MixerSnapshot,
     selected: Option<String>,
 }
 impl Edit {
     fn capture(mode: ShowMode, visual: &VizSettings, selected: &Option<String>) -> Self {
         Self {
             look: Look::capture("", mode, visual),
+            mixer: MixerSnapshot::capture(&visual.performance),
             selected: selected.clone(),
         }
     }
@@ -21,6 +43,7 @@ impl Edit {
         selected: &mut Option<String>,
     ) {
         if self.look.apply(mode, visual) {
+            self.mixer.apply(&mut visual.performance);
             *selected = self.selected;
         }
     }
@@ -37,7 +60,7 @@ impl Editor {
     pub fn observe(&mut self, mode: ShowMode, visual: &VizSettings, selected: &Option<String>) {
         let next = Edit::capture(mode, visual, selected);
         if let Some(current) = &self.current {
-            if current.look != next.look && self.pending.is_none() {
+            if (current.look != next.look || current.mixer.interaction != next.mixer.interaction) && self.pending.is_none() {
                 self.pending = Some(current.clone());
             }
         }
@@ -45,7 +68,7 @@ impl Editor {
     }
     pub fn finish_gesture(&mut self) {
         if let Some(before) = self.pending.take() {
-            if self.current.as_ref().is_some_and(|s| s.look != before.look) {
+            if self.current.as_ref().is_some_and(|s| s.look != before.look || s.mixer.interaction != before.mixer.interaction) {
                 if self.undo.len() == 128 {
                     self.undo.remove(0);
                 }
@@ -160,6 +183,8 @@ mod tests {
         });
         for i in 1..100 {
             visual.speed = i as f32 / 100.0;
+            visual.signal_gains[3] = i as f32 / 100.0;
+            visual.scene_controls.insert("tunnel".into(), [i as f32 / 100.0; 4]);
             editor.observe(mode, &visual, &None);
         }
         editor.finish_gesture();
@@ -185,6 +210,8 @@ mod tests {
             .apply(&mut mode, &mut visual, &mut selected);
         assert!(mode == ShowMode::Particles && visual.speed == 0.99);
         assert_eq!(visual.effects.len(), 1);
+        assert_eq!(visual.signal_gains[3], 0.99);
+        assert_eq!(visual.scene_controls["tunnel"], [0.99; 4]);
     }
     #[test]
     fn shuffle_and_noop_gestures_do_not_fill_history_or_drop_redo() {

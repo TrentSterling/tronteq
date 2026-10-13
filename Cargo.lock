@@ -4428,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "tronteq"
-version = "0.13.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -4447,7 +4447,7 @@ dependencies = [
 
 [[package]]
 name = "tronteq-cli"
-version = "0.13.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4457,7 +4457,7 @@ dependencies = [
 
 [[package]]
 name = "tronteq-shared"
-version = "0.13.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "memmap2",
@@ -4468,7 +4468,7 @@ dependencies = [
 
 [[package]]
 name = "tronteq-uitest"
-version = "0.13.0"
+version = "0.18.0"
 dependencies = [
  "eframe",
  "egui",

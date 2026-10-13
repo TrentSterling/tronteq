@@ -27,6 +27,15 @@ mod audio_format;
 mod audio_analysis;
 mod vizbus;
 mod viz_settings;
+mod viz_motion;
+mod viz_signals;
+mod viz_performance;
+mod viz_xy;
+mod patch_bay;
+mod viz_compositor;
+mod viz_record;
+mod performance_panel;
+mod viz_audition;
 mod viz_edit;
 mod viz_panel;
 mod viz_looks;
@@ -139,6 +148,7 @@ const MIN_INNER_W: f32 = 640.0;
 const MIN_INNER_H: f32 = 300.0;
 
 fn main() -> Result<()> {
+    if std::env::args().nth(1).as_deref()==Some("--render-take"){return viz_record::run_export_cli();}
     install_crash_logger();
     log_line(&format!("start pid={} main tid={}", std::process::id(), tid()));
     let startup = std::env::args().any(|arg| arg == "--startup");
@@ -979,7 +989,17 @@ impl eframe::App for App {
         if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
             self.profiler.overlay = !self.profiler.overlay;
         }
+        if ctx.input(|i| i.key_pressed(egui::Key::F11)) { self.viz_browser.gallery.open = false; }
         if !self.viz_browser.gallery.open { self.presentation.input(ctx); }
+        let step = std::mem::take(&mut self.presentation.scene_step);
+        if step != 0 {
+            let pool = self.viz_settings.scene_pool();
+            let current = pool.iter().position(|scene| *scene == self.show.mode).unwrap_or(0);
+            let next = (current as i32 + step).rem_euclid(pool.len() as i32) as usize;
+            self.show.mode = pool[next];
+            self.viz_browser.editor.follow_scene(self.show.mode);
+            self.shuffle_next = std::time::Instant::now() + std::time::Duration::from_secs_f32(self.viz_settings.shuffle_seconds);
+        }
 
         let visual_before_input = self.show.mode;
         let shortcuts_blocked = self.presentation.active || self.viz_browser.gallery.open
@@ -1144,6 +1164,16 @@ impl eframe::App for App {
                 );
                 window_chrome::drag_window(ctx, &wm);
                 }
+                let version = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                            .size(12.0)
+                            .color(theme::muted()),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .sense(egui::Sense::click_and_drag()),
+                );
+                window_chrome::drag_window(ctx, &version);
                 ui.separator();
                 let choices: Vec<_> = self.store.entries.iter().map(|e| {
                     let p = &e.profile;
@@ -1338,7 +1368,7 @@ impl eframe::App for App {
         if self.show.mode != visual_before_input {
             self.shuffle_next = std::time::Instant::now() + shuffle_period;
         }
-        if self.show_shuffle && self.show.mode != show::ShowMode::Off {
+        if self.show_shuffle && !self.viz_browser.recorder.playing && !self.viz_browser.audition.playing && !self.viz_browser.performance.playing && self.show.mode != show::ShowMode::Off {
             let now = std::time::Instant::now();
             if now >= self.shuffle_next {
                 let gl_modes = self.viz_settings.scene_pool();
@@ -1368,11 +1398,21 @@ impl eframe::App for App {
         }
 
         let t_hist = std::time::Instant::now();
-        let analyzed = self.capture.frame.clone();
+        let before_audition_scene = self.show.mode;
+        if self.viz_browser.recorder.playing {self.viz_browser.audition.playing=false;}
+        let analyzed = self.viz_browser.audition.tick(self.capture.frame.clone(), ctx.input(|i| i.time), &mut self.show.mode, &self.viz_settings);
+        if self.show.mode != before_audition_scene { self.viz_browser.editor.follow_scene(self.show.mode); }
+        if self.viz_browser.audition.epoch != self.viz_browser.motion_epoch {
+            self.viz_browser.motion = Default::default();
+            self.viz_browser.performance.motion_b = Default::default();
+            self.viz_browser.performance.flash_a = Default::default();
+            self.viz_browser.performance.flash_b = Default::default();
+            self.viz_browser.motion_epoch = self.viz_browser.audition.epoch;
+        }
         let wave = &analyzed.wave;
         let spectrum = &analyzed.spectrum;
         let stereo = &analyzed.stereo;
-        if self.layers.waterfall && self.spectro_revision != self.capture.revision {
+        if self.layers.waterfall && (self.viz_browser.audition.playing || self.spectro_revision != self.capture.revision) {
             self.spectro.replace_rows(&analyzed.waterfall);
             self.spectro_revision = self.capture.revision;
         }
@@ -1389,54 +1429,44 @@ impl eframe::App for App {
         let t_canvas = std::time::Instant::now();
         // Uniforms for the GL stage: VizBus stats + theme accent + the audio
         // textures' source data, all by value (Copy) for the paint callback.
-        let uni = {
-            let b = &analyzed.bus;
-            let energy = self.viz_settings.energy;
-            let (fx_order, fx_mix, fx_count) = self.viz_settings.effect_uniforms();
-            let acc = theme::viz_accent();
-            let mut spec_arr = [0.0f32; glstage::SPEC_W];
-            for (i, s) in spectrum.iter().take(glstage::SPEC_W).enumerate() {
-                spec_arr[i] = (*s * energy).clamp(0.0, 1.0);
+        let dt=ctx.input(|i| i.stable_dt).clamp(0.0,0.1);
+        let replaying=self.viz_browser.recorder.playing;
+        let mix=if replaying{self.viz_settings.performance.crossfade}else{self.viz_browser.performance.tick(&mut self.show.mode,&mut self.viz_settings,&analyzed.bus,dt)};
+        let swapped= !replaying && std::mem::take(&mut self.viz_browser.performance.swap_decks);
+        if swapped {
+            if let Some(stage)=&self.gl_stage {if let Ok(mut stage)=stage.lock(){stage.swap_decks();}}
+            std::mem::swap(&mut self.viz_browser.motion,&mut self.viz_browser.performance.motion_b);
+            std::mem::swap(&mut self.viz_browser.performance.flash_a,&mut self.viz_browser.performance.flash_b);
+            self.viz_browser.editor.follow_scene(self.show.mode);
+        }
+        if !ctx.input(|i| i.focused && i.pointer.primary_down()) || self.viz_browser.page!=viz_panel::Page::Xy {self.viz_browser.motion.xy.held=false;}
+        let mut uni=viz_performance::uniforms(&self.viz_settings,self.show.mode,&analyzed,&mut self.viz_browser.motion,&mut self.viz_browser.performance.flash_a,dt,self.viz_browser.audition.epoch);
+        let pointer_held=self.viz_browser.performance.held;
+        if !ctx.input(|i| i.focused && i.pointer.primary_down()) || self.viz_browser.page!=viz_panel::Page::Perform {self.viz_browser.performance.held.fill(false);}
+        if (self.viz_browser.page==viz_panel::Page::Perform || self.presentation.active) && !ctx.wants_keyboard_input() {
+            for (i,key) in [egui::Key::Num1,egui::Key::Num2,egui::Key::Num3,egui::Key::Num4,egui::Key::Num5].into_iter().enumerate() {
+                self.viz_browser.performance.held[i] |= ctx.input(|input| input.focused && input.key_down(key));
             }
-            let mut wave_arr = [0.0f32; glstage::WAVE_W];
-            if wave.len() >= 2 {
-                let step = (wave.len() / glstage::WAVE_W).max(1);
-                for (i, w) in wave.iter().step_by(step).take(glstage::WAVE_W).enumerate() {
-                    wave_arr[i] = (*w * energy).clamp(-1.0, 1.0);
-                }
-            }
-            glstage::Uniforms {
-                mode: glstage::GlMode::Warp, // overwritten by the active mode
-                bass: (b.bass * energy).min(1.0),
-                mid: (b.mid * energy).min(1.0),
-                treble: (b.treble * energy).min(1.0),
-                pulse: (b.pulse * energy).min(1.0),
-                beat_phase: b.beat_phase,
-                bright: b.centroid,
-                rainbow: self.viz_settings.rainbow,
-                accent: [
-                    acc.r() as f32 / 255.0,
-                    acc.g() as f32 / 255.0,
-                    acc.b() as f32 / 255.0,
-                ],
-                spec: spec_arr,
-                wave: wave_arr,
-                bpm: b.bpm,
-                bpm_conf: b.bpm_conf,
-                flux: (b.flux * energy).min(1.0),
-                loud: (((b.loud_db + 60.0) / 60.0).clamp(0.0, 1.0) * energy).min(1.0),
-                crest: (b.crest_db / 24.0).clamp(0.0, 1.0),
-                corr: b.corr,
-                width: b.width,
-                fx: 0, fx_order, fx_mix, fx_count,
-                speed: self.viz_settings.speed,
-                brightness: self.viz_settings.brightness,
-                render_scale: self.viz_settings.quality.scale(),
-                transition_seconds: self.viz_settings.transition_seconds,
-                draw_editor: !self.presentation.active && !self.viz_settings.stage_view,
-                draw_overlays: !self.presentation.active && (!self.viz_settings.stage_view || self.viz_settings.overlays_in_stage),
-            }
-        };
+        }
+        self.viz_browser.performance.tick_pads(&self.viz_settings,&mut self.viz_browser.motion,dt);
+        self.viz_browser.performance.held=pointer_held;
+        self.viz_browser.performance.apply_pads(&mut uni);
+        uni.draw_editor=!self.presentation.active && !self.viz_settings.stage_view;
+        uni.draw_overlays=!self.presentation.active && (!self.viz_settings.stage_view || self.viz_settings.overlays_in_stage);
+        let mix=self.viz_browser.motion.value(&self.viz_settings.motion,"crossfade",mix);
+        let mut deck_b=if self.viz_settings.performance.enabled {
+            self.viz_settings.performance.deck_b.as_ref().map(|look| {
+                let mut config=viz_settings::VizSettings::default();let mut mode=show::ShowMode::Off;
+                look.apply(&mut mode,&mut config);config.quality=self.viz_settings.quality;config.transition_seconds=0.0;
+                let mut u=viz_performance::uniforms(&config,mode,&analyzed,&mut self.viz_browser.performance.motion_b,&mut self.viz_browser.performance.flash_b,dt,self.viz_browser.audition.epoch);
+                self.viz_browser.performance.apply_pads(&mut u);(u,mix)
+            })
+        }else{None};
+        if self.show.mode==show::ShowMode::Off && self.viz_browser.recorder.recording {self.viz_browser.recorder.recording=false;self.viz_browser.recorder.message="Choose a scene before recording.".into();}
+        self.viz_browser.recorder.record(dt,&mut uni,&mut deck_b,swapped);
+        let replay=self.viz_browser.recorder.playback(dt);
+        if replay.is_some(){if let Some(recorded)=self.viz_browser.recorder.last_uniforms(){uni=recorded;}}
+        if let Some(stage)=&self.gl_stage {if let Ok(mut stage)=stage.lock(){stage.set_deck_b(deck_b);stage.set_replay(replay);}}
         let mut eq_changed = false;
         {
             let viz = curve::VizData {
@@ -1620,7 +1650,7 @@ impl eframe::App for App {
         // value change" diff doesn't catch (SpaceView precedent).
         if cur == self.settings_cache {
             self.settings_error = None;
-        } else if !ctx.input(|i| i.pointer.primary_down()) && std::time::Instant::now() >= self.settings_retry_at {
+        } else if !ctx.input(|i| i.pointer.primary_down()) && self.viz_browser.performance.fade.is_none() && std::time::Instant::now() >= self.settings_retry_at {
             match cur.save() {
                 Ok(()) => { self.settings_cache = cur; self.settings_error = None; }
                 Err(error) => {
@@ -1696,7 +1726,7 @@ impl eframe::App for App {
         // commit so it never measures itself; Boxel rule).
         self.profiler.add(profiler::Scope::Update, t_update.elapsed());
         self.profiler.commit_frame();
-        self.profiler.draw_overlay(ctx, self.frame_ms);
+        if !self.presentation.active { self.profiler.draw_overlay(ctx, self.frame_ms); }
 
         // Delivered-FPS counter (the heartbeat thread owns pacing; this just
         // measures what actually arrives so the jank is a number, not a vibe).

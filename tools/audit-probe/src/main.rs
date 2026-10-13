@@ -11,10 +11,23 @@ mod dsp_preview;
 mod glstage;
 mod preview;
 mod thumbnails;
+mod gauntlet;
+#[path = "../../../gui/src/audio_analysis.rs"]
+mod audio_analysis;
+#[path = "../../../gui/src/audio_format.rs"]
+mod audio_format;
+#[path = "../../../gui/src/visualizer.rs"]
+mod visualizer;
+#[path = "../../../gui/src/vizbus.rs"]
+mod vizbus;
+#[path = "../../../gui/src/spectrogram.rs"]
+mod spectrogram;
 #[path = "../../../gui/src/show.rs"]
 mod show;
 #[path = "../../../gui/src/theme.rs"]
 mod theme;
+#[path = "../../../gui/src/window_chrome.rs"]
+mod window_chrome;
 #[path = "../../../gui/src/viz_panel.rs"]
 mod viz_panel;
 #[path = "../../../gui/src/viz_looks.rs"]
@@ -37,6 +50,24 @@ mod state_recovery;
 mod profile_picker;
 #[path = "../../../gui/src/viz_settings.rs"]
 mod viz_settings;
+#[path = "../../../gui/src/viz_motion.rs"]
+mod viz_motion;
+#[path = "../../../gui/src/viz_signals.rs"]
+mod viz_signals;
+#[path = "../../../gui/src/viz_performance.rs"]
+mod viz_performance;
+#[path = "../../../gui/src/viz_xy.rs"]
+mod viz_xy;
+#[path = "../../../gui/src/patch_bay.rs"]
+mod patch_bay;
+#[path = "../../../gui/src/viz_compositor.rs"]
+mod viz_compositor;
+#[path = "../../../gui/src/viz_record.rs"]
+mod viz_record;
+#[path = "../../../gui/src/performance_panel.rs"]
+mod performance_panel;
+#[path = "../../../gui/src/viz_audition.rs"]
+mod viz_audition;
 #[path = "../../../gui/src/viz_edit.rs"]
 mod viz_edit;
 
@@ -47,6 +78,9 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+
+fn log_line(message: &str) { println!("{message}"); }
+fn tid() -> u32 { unsafe { windows::Win32::System::Threading::GetCurrentThreadId() } }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
@@ -122,11 +156,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let preview_only = args.iter().any(|a| a == "--preview-only");
     let thumbnails_only = args.iter().any(|a| a == "--thumbnails-only");
+    let live_gauntlet = args.iter().any(|a| a == "--live-gauntlet");
     eframe::run_native(
         "TrontEQ isolated audit",
         options,
         Box::new(move |cc| {
-            let result = if thumbnails_only {
+            let result = if live_gauntlet {
+                unsafe { gauntlet::run(cc.gl.as_ref().expect("GL context").clone()) }
+                    .map_err(|e| format!("{e:#}"))
+            } else if thumbnails_only {
                 unsafe { thumbnails::render(cc.gl.as_ref().expect("GL context")) }
             } else {
                 (if preview_only { Ok(()) } else { unsafe { probe_gl(cc.gl.as_ref().expect("GL context")) } })
@@ -266,6 +304,8 @@ unsafe fn probe_gl(gl: &glow::Context) -> Result<(), String> {
         bright: 0.5,
         spec: [0.6; SPEC_W],
         wave: std::array::from_fn(|i| (i as f32 * 0.1).sin() * 0.4),
+        stereo: std::array::from_fn(|i| [(i as f32 * 0.13).sin() * 0.2, (i as f32 * 0.13 + 0.7).sin() * 0.2]),
+        width: 0.6,
         ..Default::default()
     };
     let mut all_scenes = GlStage::new(gl)?;
@@ -293,7 +333,7 @@ unsafe fn probe_gl(gl: &glow::Context) -> Result<(), String> {
             scene.label()
         );
     }
-    println!("37/37 scenes rendered nonempty frames without GL errors");
+    println!("{MODE_COUNT}/{MODE_COUNT} scenes rendered nonempty frames without GL errors");
     let timeline = |fps: usize, speed: f32, count: usize, u: Uniforms| -> Result<Vec<u8>, String> {
         let mut stage = GlStage::new(gl)?;
         let u = Uniforms { speed, ..u };
@@ -308,7 +348,9 @@ unsafe fn probe_gl(gl: &glow::Context) -> Result<(), String> {
             );
         }
         assert_eq!(gl.get_error(), glow::NO_ERROR);
-        Ok(read())
+        let result = read();
+        stage.destroy(gl);
+        Ok(result)
     };
     for mode in [GlMode::Warp, GlMode::Trails, GlMode::Terrain] {
         let u = Uniforms { mode, ..uniform };
@@ -333,6 +375,77 @@ unsafe fn probe_gl(gl: &glow::Context) -> Result<(), String> {
     println!(
         "Warp / Scope trails / Terrain: identical at 20, 60, 144 fps; speed 0x and 2x verified"
     );
+    for mode in [GlMode::Flame, GlMode::Tunnel, GlMode::Terrain, GlMode::Matrix, GlMode::StereoScope, GlMode::Spectrogram, GlMode::SpectralCity, GlMode::Cymatics, GlMode::StereoOrbit, GlMode::Kaleido, GlMode::Copper, GlMode::Laser] {
+        for axis in 0..4 {
+            let mut lo = Uniforms { mode, ..uniform };
+            lo.controls[axis] = 0.0;
+            let mut hi = lo;
+            hi.controls[axis] = 2.0;
+            let control_frame = |mut input: Uniforms| -> Result<Vec<u8>, String> {
+                if mode != GlMode::StereoScope || axis != 3 { return timeline(60, 1.0, 120, input); }
+                // Persistence is observable when a trace moves or disappears,
+                // not while repainting the same stationary signal indefinitely.
+                let mut stage = GlStage::new(gl)?;
+                for frame in 0..80 {
+                    if frame == 60 { input.stereo.fill([0.0; 2]); }
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                    gl.scissor(0, 0, w, h);
+                    stage.paint_elapsed(gl, &input, [0,0,w,h], 1.0/60.0);
+                }
+                let pixels = read();
+                stage.destroy(gl);
+                Ok(pixels)
+            };
+            assert!(control_frame(lo)? != control_frame(hi)?,
+                "scene {} control {} has no rendered effect", mode as usize, axis);
+        }
+    }
+    println!("48/48 scene controls change rendered pixels at their range endpoints");
+    for (mode, variant) in [(GlMode::Flame, 0), (GlMode::StereoScope, 1)] {
+        for axis in 0..4 {
+            let mut lo = Uniforms { mode, variant, ..uniform };
+            lo.details[axis] = 0.0;
+            let mut hi = lo;
+            hi.details[axis] = 2.0;
+            assert!(timeline(60,1.0,120,lo)? != timeline(60,1.0,120,hi)?,
+                "detail control {axis} has no rendered effect");
+        }
+    }
+    let original = timeline(60,1.0,120,Uniforms { mode:GlMode::Flame,..uniform })?;
+    let mut variants = Vec::new();
+    for variant in 1..=4 {
+        let pixels=timeline(60,1.0,120,Uniforms { mode:GlMode::Flame,variant,..uniform })?;
+        assert!(pixels != original && !variants.contains(&pixels), "Flame variations must be distinct");
+        variants.push(pixels);
+    }
+    let base=timeline(60,1.0,20,uniform)?;
+    assert!(base != timeline(60,1.0,20,Uniforms { hue:0.4,..uniform })?);
+    assert!(base != timeline(60,1.0,20,Uniforms { saturation:0.0,..uniform })?);
+    println!("8/8 detail controls, four distinct Flame variants, hue and saturation verified");
+    let orientation = |opposite: bool| -> Result<(f64,f64),String> {
+        let mut u = uniform;
+        u.mode = GlMode::StereoScope;
+        u.rainbow = false;
+        u.controls[2] = 0.0; // Measure only the signal, without the scope grid.
+        u.stereo = std::array::from_fn(|i| {
+            let s = (i as f32 * 0.08).sin() * 0.12;
+            [s, if opposite { -s } else { s }]
+        });
+        let image = timeline(60, 1.0, 1, u)?;
+        let (mut xx,mut yy) = (0.0,0.0);
+        for (i,p) in image.chunks_exact(4).enumerate() {
+            let weight = (p[0] as f64 + p[1] as f64 + p[2] as f64) / 765.0;
+            let x = (i % w as usize) as f64 - (w-1) as f64 * 0.5;
+            let y = (i / w as usize) as f64 - (h-1) as f64 * 0.5;
+            xx += x*x*weight; yy += y*y*weight;
+        }
+        Ok((xx,yy))
+    };
+    let mono = orientation(false)?;
+    let side = orientation(true)?;
+    assert!(mono.1 > mono.0 * 4.0 && side.0 > side.1 * 4.0,
+        "Stereo scope must display mono vertically and opposite phase horizontally");
+    println!("Stereo scope: mono vertical / opposite phase horizontal verified from rendered pixels");
     let mut ordered = Uniforms {
         mode: GlMode::Plasma,
         fx_count: 2,
@@ -366,6 +479,88 @@ unsafe fn probe_gl(gl: &glow::Context) -> Result<(), String> {
         stage.paint_elapsed(gl, &u, [0, 0, w, h], elapsed);
         read()
     };
+    let a=Uniforms{mode:GlMode::Plasma,speed:0.0,transition_seconds:0.0,..uniform};
+    let mut b=Uniforms{mode:GlMode::Voronoi,speed:0.0,transition_seconds:0.0,fx_count:1,..uniform};
+    b.fx_order[0]=crate::viz_settings::Effect::Scanlines.bit();b.fx_mix[0]=0.7;
+    let mut dual=GlStage::new(gl)?;
+    dual.set_deck_b(Some((b,0.0)));let a_frame=paint(&mut dual,a,0.0);
+    dual.set_deck_b(Some((b,1.0)));let b_frame=paint(&mut dual,a,0.0);
+    assert_ne!(a_frame,b_frame,"decks must retain independent scenes and effects");
+    dual.set_deck_b(Some((b,0.5)));let mixed=paint(&mut dual,a,0.0);
+    for ((a,b),m) in a_frame.iter().zip(&b_frame).zip(&mixed) {assert!(((*a as f32+*b as f32)*0.5-*m as f32).abs()<=1.1,"dual deck midpoint");}
+    dual.swap_decks();dual.set_deck_b(None);
+    assert_eq!(b_frame,paint(&mut dual,b,0.0),"take B must preserve its image and feedback");
+    let frozen=paint(&mut dual,Uniforms{freeze:true,hue:0.7,bass:1.0,..b},0.05);
+    assert_eq!(b_frame,frozen,"Freeze holds the composed frame");
+    let moved=paint(&mut dual,Uniforms{transform:[1.5,0.3,0.1,0.0],..b},0.0);
+    assert_ne!(b_frame,moved,"frame movement must affect the image");
+    let plain=paint(&mut dual,b,0.0);
+    let mut flashed=b;flashed.fx_count=2;flashed.fx_order[1]=crate::viz_settings::Effect::Strobe.bit();flashed.fx_mix[1]=1.0;flashed.flash=0.0;
+    assert_eq!(plain,paint(&mut dual,flashed,0.0),"zero flash must preserve the source");
+    flashed.flash=1.0;assert_ne!(plain,paint(&mut dual,flashed,0.0),"explicit flash envelope must drive the effect");
+    for (name,pixels) in [("deck-a",a_frame),("deck-b",b_frame),("deck-mix",mixed),("deck-transform",moved)] {
+        let mut image=image::RgbaImage::from_raw(w as u32,h as u32,pixels).unwrap();image::imageops::flip_vertical_in_place(&mut image);image.save(format!("target/performance-{name}.png")).map_err(|e|e.to_string())?;
+    }
+    assert_eq!(gl.get_error(),glow::NO_ERROR);dual.destroy(gl);
+    println!("Two live decks / independent effects / 50% mix / take B continuity / freeze / frame movement / flash envelope passed");
+    b.spec=[0.15;SPEC_W];
+    for blend in 0..5 {
+        let mut stage=GlStage::new(gl)?;let u=Uniforms{blend,..a};
+        stage.set_deck_b(None);let clean_a=paint(&mut stage,u,0.0);
+        stage.set_deck_b(Some((b,0.0)));assert_eq!(clean_a,paint(&mut stage,u,0.0),"blend {blend} A endpoint");
+        stage.set_deck_b(Some((b,1.0)));let clean_b=paint(&mut stage,u,0.0);
+        let mut reference=GlStage::new(gl)?;assert_eq!(clean_b,paint(&mut reference,b,0.0),"blend {blend} B endpoint");reference.destroy(gl);
+        stage.set_deck_b(Some((b,0.37)));let middle=paint(&mut stage,u,0.0);assert_ne!(middle,clean_a);assert_ne!(middle,clean_b);
+        stage.swap_decks();stage.set_deck_b(Some((a,0.63)));let swapped=paint(&mut stage,Uniforms{blend,blend_reverse:true,..b},0.0);
+        assert!(middle.iter().zip(swapped).all(|(a,b)|(*a as i32-b as i32).abs()<=1),"blend {blend} swap continuity");stage.destroy(gl);
+    }
+    // Spatial deck interaction must remain reversible and keep pure crossfader endpoints.
+    for kind in 1..=3 {
+        for direction in 0..=2 {
+            let mut stage=GlStage::new(gl)?;
+            let u=Uniforms{interaction_mode:kind,interaction_direction:direction,interaction:[0.7,1.2,0.4,0.3],..a};
+            stage.set_deck_b(None);let clean_a=paint(&mut stage,u,0.0);
+            stage.set_deck_b(Some((b,0.0)));assert_eq!(clean_a,paint(&mut stage,u,0.0),"distortion A endpoint");
+            let mut reference=GlStage::new(gl)?;let clean_b=paint(&mut reference,b,0.0);reference.destroy(gl);
+            stage.set_deck_b(Some((b,1.0)));assert_eq!(clean_b,paint(&mut stage,u,0.0),"distortion B endpoint");
+            stage.set_deck_b(Some((b,0.37)));let plain=paint(&mut stage,Uniforms{interaction_mode:0,..u},0.0);
+            let mut zero=u;zero.interaction[0]=0.0;assert_eq!(plain,paint(&mut stage,zero,0.0),"zero amount preserves blend");
+            for blend in 0..5 {
+                let u=Uniforms{blend,..u};let mixed=paint(&mut stage,u,0.0);
+                assert_ne!(plain,mixed,"distortion has no effect");
+                let swapped_direction=match direction {0=>1,1=>0,_=>2};
+                stage.swap_decks();stage.set_deck_b(Some((a,0.63)));
+                let swapped=paint(&mut stage,Uniforms{interaction_direction:swapped_direction,blend_reverse:true,..Uniforms{mode:b.mode,fx_count:b.fx_count,fx_order:b.fx_order,fx_mix:b.fx_mix,spec:b.spec,..u}},0.0);
+                assert!(mixed.iter().zip(&swapped).all(|(a,b)|(*a as i32-*b as i32).abs()<=1),"distortion {kind}/{direction} blend {blend} swap continuity");
+                stage.swap_decks();stage.set_deck_b(Some((b,0.37)));
+                if direction==0 && blend==0 {let mut img=image::RgbaImage::from_raw(w as u32,h as u32,mixed).unwrap();image::imageops::flip_vertical_in_place(&mut img);img.save(format!("target/interaction-{kind}.png")).map_err(|e|e.to_string())?;}
+            }
+            stage.destroy(gl);
+        }
+    }
+    println!("Cross-deck distortion: 3 modes x 3 directions x 5 blends, swaps, pure endpoints and zero amount passed");
+    let mut stage=GlStage::new(gl)?;
+    let u=Uniforms{global_pulse:[1.0,0.0,0.4,0.2],..a};
+    let low=paint(&mut stage,u,1.0/60.0);assert!(low.chunks_exact(4).all(|p|p[..3].iter().all(|v|*v<=103)),"global brightness ceiling");
+    let raised=paint(&mut stage,Uniforms{brightness:1.5,..u},1.0/60.0);
+    let peak_delta=low.iter().zip(&raised).map(|(a,b)|(*a as i32-*b as i32).abs()).max().unwrap();assert!(peak_delta<12,"soft attack prevents a one-frame jump");
+    stage.destroy(gl);println!("All five blend endpoints, swaps, pulse ceiling and soft attack passed");
+    // Record the same resolved values the application sends, including a deck swap.
+    let mut recorder=crate::viz_record::Recorder::default();recorder.start();let mut original=GlStage::new(gl)?;let mut expected=vec![];
+    for i in 0..120 {
+        let swapped=i==70;if swapped{original.swap_decks();}
+        let mut u=Uniforms{mode:if i<70{GlMode::Warp}else{GlMode::Flame},epoch:8,blend:2,interaction_mode:2,interaction_direction:if i<70{0}else{1},interaction:[0.6,1.3,0.4,0.3],global_pulse:[0.6,0.7,0.8,0.2],pulse:(i as f32*0.1).sin().abs(),..uniform};
+        let mut other=Some((Uniforms{mode:if i<70{GlMode::Flame}else{GlMode::Warp},..u},if i<70{i as f32/100.0}else{0.3}));
+        recorder.record(1.0/60.0,&mut u,&mut other,swapped);original.set_deck_b(other);expected=paint(&mut original,u,1.0/60.0);
+    }
+    original.destroy(gl);recorder.recording=false;recorder.take.validate().map_err(|e|e.to_string())?;
+    for fps in [20,60,144]{let mut replay=GlStage::new(gl)?;recorder.play();let mut frames=0;let mut last=vec![];
+        for _ in 0..fps*3 {if let Some(batch)=recorder.playback(1.0/fps as f32){frames+=batch.len();let u=recorder.last_uniforms().unwrap();replay.set_replay(Some(batch));gl.bind_framebuffer(glow::FRAMEBUFFER,Some(fbo));gl.scissor(0,0,w,h);replay.paint(gl,&u,[0,0,w,h]);last=read();}}
+        assert_eq!(frames,120);assert_eq!(last,expected,"record/replay at {fps} fps");replay.destroy(gl);
+    }
+    let folder=std::path::Path::new("target/performance-018");std::fs::create_dir_all(folder).map_err(|e|e.to_string())?;
+    let take_path=folder.join("verified.trontperf.json");if !take_path.exists(){recorder.take.save(&take_path).map_err(|e|e.to_string())?;}
+    assert_eq!(gl.get_error(),glow::NO_ERROR);println!("Resolved take: pixel-identical replay at 20/60/144 fps including deck swap and final pulse history");
     let mut transition = GlStage::new(gl)?;
     let from = paint(&mut transition, Uniforms { mode: GlMode::Plasma, ..uniform }, 0.0);
     let to = Uniforms { mode: GlMode::Voronoi, speed: 0.0, transition_seconds: 1.0, ..uniform };

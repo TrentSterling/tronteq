@@ -17,6 +17,8 @@ mod theme;
 mod dsp_preview;
 #[path = "../../gui/src/glstage.rs"]
 mod glstage;
+#[path = "../../gui/src/viz_compositor.rs"]
+mod viz_compositor;
 #[path = "../../gui/src/render_timer.rs"]
 mod render_timer;
 #[path = "../../gui/src/show.rs"]

@@ -37,7 +37,12 @@
     "gl_sonar",
     "gl_pulsar",
     "gl_blackhole",
-    "gl_ocean"
+    "gl_ocean",
+    "stereo_scope",
+    "spectrogram",
+    "spectral_city",
+    "cymatics",
+    "stereo_orbit"
   ],
   "tile_height": 144,
   "tile_width": 256

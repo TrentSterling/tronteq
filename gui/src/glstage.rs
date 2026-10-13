@@ -16,17 +16,42 @@ use std::time::Instant;
 
 use eframe::glow::{self, HasContext};
 
+mod arrays {
+    use serde::{Serialize,Deserialize,Serializer,Deserializer};
+    pub fn serialize<S:Serializer,T:Serialize,const N:usize>(a:&[T;N],s:S)->Result<S::Ok,S::Error>{a.as_slice().serialize(s)}
+    pub fn deserialize<'de,D:Deserializer<'de>,T:Deserialize<'de>,const N:usize>(d:D)->Result<[T;N],D::Error>{Vec::<T>::deserialize(d)?.try_into().map_err(|_|serde::de::Error::custom("Invalid signal array length"))}
+}
+
 /// Spectrum texture width (matches the analyzer's bin count upper bound).
 pub const SPEC_W: usize = 64;
 /// Waveform texture width (decimated).
 pub const WAVE_W: usize = 256;
+pub const STEREO_W: usize = 256;
 /// Spectrum-history rows (the audio terrain's depth).
 pub const HIST_ROWS: usize = 128;
 
 /// Everything a shader frame needs, by value (Copy) so the paint callback can
 /// own it without borrowing App.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Uniforms {
+    pub playback:bool,
+    pub blend:u32,
+    pub blend_reverse:bool,
+    pub interaction_mode: u32,
+    pub interaction_direction: u32,
+    pub interaction: [f32; 4],
+    pub global_pulse:[f32;4],
+    pub step_seconds:Option<f32>,
+    pub transform: [f32;4],
+    pub flash: f32,
+    pub freeze: bool,
+    pub epoch: u64,
+    #[serde(with="arrays")]
+    pub stereo: [[f32; 2]; STEREO_W],
+    pub controls: [f32; 4],
+    pub details: [f32; 4],
+    pub variant: u32,
     pub mode: GlMode,
     pub bass: f32,
     pub mid: f32,
@@ -36,7 +61,9 @@ pub struct Uniforms {
     pub bright: f32,
     pub rainbow: bool,
     pub accent: [f32; 3],
+    #[serde(with="arrays")]
     pub spec: [f32; SPEC_W],
+    #[serde(with="arrays")]
     pub wave: [f32; WAVE_W],
     pub bpm: f32,
     pub bpm_conf: f32,
@@ -54,6 +81,8 @@ pub struct Uniforms {
     pub fx_count: usize,
     pub speed: f32,
     pub brightness: f32,
+    pub hue: f32,
+    pub saturation: f32,
     pub render_scale: f32,
     pub transition_seconds: f32,
     pub draw_editor: bool,
@@ -63,6 +92,13 @@ pub struct Uniforms {
 impl Default for Uniforms {
     fn default() -> Self {
         Uniforms {
+            playback:false,
+            blend:0,blend_reverse:false,interaction_mode:0,interaction_direction:0,interaction:[0.45,1.0,0.0,0.25],global_pulse:[0.0,0.4,0.85,0.2],step_seconds:None,
+            transform:[1.0,0.0,0.0,0.0], flash:-1.0, freeze:false,
+            epoch: 0,
+            stereo: [[0.0; 2]; STEREO_W],
+            controls: [1.0; 4],
+            details: [1.0; 4], variant: 0,
             mode: GlMode::Warp,
             bass: 0.0,
             mid: 0.0,
@@ -83,14 +119,18 @@ impl Default for Uniforms {
             width: 0.0,
             fx: 0,
             fx_order: [0; 10], fx_mix: [1.0; 10], fx_count: 0,
+            hue: 0.0, saturation: 1.0,
             speed: 1.0, brightness: 1.0, draw_editor: true, draw_overlays: true,
             render_scale: 1.0, transition_seconds: 0.0,
         }
     }
 }
 
+#[derive(Clone,serde::Serialize,serde::Deserialize)]
+pub struct ReplayFrame {pub dt:f32,pub a:Uniforms,pub b:Option<(Uniforms,f32)>,pub swap:bool}
+
 /// One variant per fragment program, in `PROGRAM_SRC` order.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq,serde::Serialize,serde::Deserialize)]
 pub enum GlMode {
     Warp,
     Flame,
@@ -129,9 +169,12 @@ pub enum GlMode {
     Trails,
     Tunnel,
     Particles,
+    StereoScope,
+    Spectrogram,
+    SpectralCity,Cymatics,StereoOrbit,
 }
 
-pub const MODE_COUNT: usize = 37;
+pub const MODE_COUNT: usize = 42;
 
 /// Stackable post-fx bits for `Uniforms::fx` — mix and match over ANY base
 /// GL mode. Kept as plain constants (not an enum) since any combination is
@@ -150,6 +193,10 @@ pub const FX_THERMAL: u32 = 1 << 9;
 /// Owns GL resource ids only (the context is passed into every call, keeping
 /// this Send for the paint callback's Arc<Mutex>).
 pub struct GlStage {
+    replay:Option<Vec<ReplayFrame>>,
+    output:crate::viz_compositor::Output,
+    deck_b: Option<Box<GlStage>>,
+    pending_b: Option<(Uniforms,f32)>,
     prog: [glow::Program; MODE_COUNT],
     present: glow::Program,
     post: glow::Program,
@@ -166,6 +213,7 @@ pub struct GlStage {
     size: (i32, i32),
     spec_tex: glow::Texture,
     wave_tex: glow::Texture,
+    stereo_tex: glow::Texture,
     hist_tex: glow::Texture,
     hist_row: usize,
     frame: u64,
@@ -174,6 +222,8 @@ pub struct GlStage {
     sim: f32,
     last_paint: Option<Instant>,
     last_mode: Option<GlMode>,
+    last_epoch: u64,
+    clear_history: bool,
     accumulator: f32,
     fade_elapsed: f32,
     fade_duration: f32,
@@ -212,6 +262,7 @@ out vec4 frag;
 uniform sampler2D uPrev;
 uniform sampler2D uSpec;
 uniform sampler2D uWave;
+uniform sampler2D uStereo;
 uniform sampler2D uHist;
 uniform float uHistRow;
 uniform vec2  uRes;
@@ -231,6 +282,9 @@ uniform float uLoud;
 uniform float uCrest;
 uniform float uCorr;
 uniform float uWidth;
+uniform vec4 uControls;
+uniform vec4 uDetails;
+uniform int uVariant;
 
 float spec(float x)  { return texture(uSpec, vec2(clamp(x, 0., 1.), .5)).r; }
 float wav(float x)   { return texture(uWave, vec2(clamp(x, 0., 1.), .5)).r; }
@@ -315,17 +369,17 @@ void main() {
 
     // Sideways curl turbulence: licking, curling tongues instead of a
     // straight vertical smear.
-    vec2 swirl = mr_curl(vUv * 5.0 + vec2(0.0, -uTime * 0.5))
-               * (0.010 + uMid * 0.020 + loud * 0.012);
+    vec2 swirl = mr_curl(vUv * (2.0 + uDetails.x * 3.0) + vec2(0.0, -uTime * 0.5))
+               * (0.010 + uMid * 0.020 + loud * 0.012) * uControls.x;
     float drift = (vnoise(vUv * 10.0 + uTime * 1.1) - 0.5) * 4.5 * px.x;
     // Stronger upward advection = taller tongues; loudness lifts them further.
-    float lift = (2.4 + uBass * 3.6 + loud * 2.0) * px.y;
+    float lift = (2.4 + uBass * 3.6 + loud * 2.0) * px.y * uControls.y;
     vec2 below = vUv + vec2(drift, -lift) + swirl;
     float heat = texture(uPrev, below).a;
-    heat *= 0.984 - vnoise(vUv * 14.0 - uTime * 1.9) * 0.05;
+    heat *= clamp(0.984 + (uControls.w - 1.0) * 0.012 - vnoise(vUv * 14.0 - uTime * 1.9) * 0.05, 0., .998);
 
     // Base feed row rises with loudness: a loud mix keeps the whole fire hot.
-    float baseY = 0.05 + loud * 0.05;
+    float baseY = (0.05 + loud * 0.05) * (.25 + uDetails.w * .75);
     float src = smoothstep(baseY, 0.0, vUv.y) * spec(vUv.x) * (1.0 + uPulse * 2.0 + loud * 0.6);
     float mid = smoothstep(0.14, 0.0, distance(vUv, vec2(0.5, 0.05))) * uPulse * 1.1;
     heat = max(heat, clamp(src + mid, 0.0, 1.3));
@@ -339,18 +393,32 @@ void main() {
     float sparkOn = step(0.92, sh) * (0.4 + uPulse);
     float spark = smoothstep(0.28, 0.0, length(fract(sp) - 0.5))
                 * sparkOn * smoothstep(1.0, 0.55, sparkLife);
-    heat = clamp(heat + spark * 0.8, 0.0, 1.4);
+    heat = clamp(heat + spark * 0.8 * uControls.z, 0.0, 1.4);
 
-    float e = mr_heatShape(heat);
+    float e = mr_heatShape(pow(max(heat,0.), 2.0/(.5+uDetails.y*1.5)));
     vec3 col;
     if (uRainbow == 1) {
         // Hue-cycled plasma fire: color cycles with height + time + heat
         // instead of sitting on a fixed fire palette.
-        col = hsv2rgb(vec3(fract(uTime * 0.10 + vUv.y * 0.6 + heat * 0.35), 0.85, clamp(e, 0.0, 1.0)));
+        col = hsv2rgb(vec3(fract(uTime * 0.10 + vUv.y * 0.6 * uDetails.z + heat * 0.35), 0.85, clamp(e, 0.0, 1.0)));
     } else {
         // uAccent tint, with the white-hot core bleeding through at peak heat.
         col = uAccent * e;
         col = mix(col, vec3(1.0), smoothstep(0.86, 1.05, heat) * 0.7);
+    }
+    if (uVariant == 1) {
+        float seams = pow(abs(sin(heat*28.)),10.);
+        col = mix(vec3(.03,.05,.08),vec3(.65,.78,.9),clamp(e*.6,0.,1.));
+        col += vec3(1.,.24,.025)*seams*e*(.5+uPulse);
+    } else if (uVariant == 2) {
+        float filament = pow(abs(sin(heat*32.)),12.);
+        col = vec3(.06,.18,.6)*e*.2 + mix(vec3(.05,.8,1.),vec3(.7,.08,1.),vUv.y)*filament*e;
+    } else if (uVariant == 3) {
+        col = mix(vec3(.4,.015,.001),vec3(1.,.7,.04),clamp(e,0.,1.))*e;
+        col += vec3(1.,.85,.4)*pow(abs(sin(heat*24.)),14.)*e*.5;
+    } else if (uVariant == 4) {
+        col = mix(vec3(.005,.1,.15),vec3(.05,1.,.55),smoothstep(.2,.95,heat))*e;
+        col += vec3(.12,.5,1.)*spark*2.;
     }
     frag = vec4(col, clamp(heat, 0.0, 1.0));
 }"#;
@@ -450,20 +518,7 @@ void main() {
     frag = vec4(min(col, vec3(1.3)), 0.0);
 }"#;
 
-const FRAG_KALEIDO: &str = r#"
-void main() {
-    vec2 p = aspect(vUv);
-    float seg = 6. + floor(uBright * 6.);
-    float a = atan(p.y, p.x) + uTime * .05 + uPulse * .1;
-    float r = length(p);
-    a = abs(mod(a, 6.28318 / seg) - 3.14159 / seg);
-    vec2 q = vec2(cos(a), sin(a)) * r;
-    q.x /= uRes.x / uRes.y;
-    vec3 prev = texture(uPrev, q * .92 + .5).rgb * .96;
-    float ring = smoothstep(.03, .0, abs(r - .25 - spec(fract(r + uPhase)) * .35));
-    vec3 base = (uRainbow == 1) ? hsv2rgb(vec3(r + uTime * .04, .85, 1.)) : uAccent;
-    frag = vec4(max(prev, base * ring * (.5 + uPulse)), 0.);
-}"#;
+const FRAG_KALEIDO: &str = include_str!("shaders/kaleido.glsl");
 
 const FRAG_TUNNEL3D: &str = r#"
 void main() {
@@ -537,46 +592,7 @@ void main() {
 
 /// The audio terrain: tron wireframe mountains raymarched over the REAL
 /// spectrum history texture (x = frequency, depth = time).
-const FRAG_TERRAIN: &str = r#"
-float hgt(vec2 xz) {
-    float h = hist(vec2(xz.x * .5 + .5, xz.y * (1. / 16.)));
-    // Camera flies at y=.58: keep peaks safely below the eye so rays get
-    // DEPTH before hitting (v0.7.0 spawned the camera inside the terrain
-    // and every pixel hit at t~0 - a flat purple wash).
-    return h * (.30 + uPulse * .10);
-}
-void main() {
-    vec2 p = aspect(vUv);
-    vec3 ro = vec3(0., .58, 0.);
-    vec3 rd = normalize(vec3(p.x, p.y - .18, .8));
-    float scroll = uTime * (1.2 + uBass * 2.);
-    vec3 col = vec3(0.);
-    float glow = smoothstep(.22, .0, abs(rd.y + .04)) * (.25 + uTreb * .5);
-    vec3 horizon = (uRainbow == 1) ? hsv2rgb(vec3(uPhase, .7, 1.)) : uAccent;
-    col += horizon * glow;
-    if (rd.y < -.01) {
-        float tt = .15;
-        bool hit = false;
-        vec3 pos = ro;
-        for (int i = 0; i < 64; i++) {
-            pos = ro + rd * tt;
-            if (pos.y < hgt(vec2(pos.x, pos.z + scroll))) { hit = true; break; }
-            tt += .03 + tt * .05;
-            if (tt > 8.) break;
-        }
-        if (hit) {
-            float zc = pos.z + scroll;
-            vec2 g = vec2(pos.x * 5., zc * 5.);
-            vec2 gf = abs(fract(g) - .5);
-            float line = smoothstep(.40, .5, max(gf.x, gf.y));
-            float h = hgt(vec2(pos.x, zc));
-            float fog = exp(-tt * .45);
-            vec3 wire = (uRainbow == 1) ? hsv2rgb(vec3(fract(h * 2.2 + uTime * .02), .85, 1.)) : uAccent;
-            col = mix(col, wire * (line * 1.35 + h * 1.4) + vec3(.010), fog);
-        }
-    }
-    frag = vec4(col, 0.);
-}"#;
+const FRAG_TERRAIN: &str = include_str!("shaders/terrain.glsl");
 
 const FRAG_RIPPLES: &str = r#"
 void main() {
@@ -611,7 +627,7 @@ void main() {
     // Slow smooth cycle 0..1: 0 = full overview, 1 = ~8x deep on the target.
     float cyc = 0.5 - 0.5 * cos(t * (6.28318 / 52.0));
     vec2 target = vec2(0.318, 0.412); // filament-rich edge of this c's Julia set
-    float baseScale = 2.4 - uPulse * 0.5 - uBass * 0.25;
+    float baseScale = 2.7 - uPulse * 0.18 - uBass * 0.10;
     float scale = exp(mix(log(baseScale), log(baseScale / 8.0), cyc));
     vec2 center = mix(vec2(0.0), target, cyc);
 
@@ -623,19 +639,21 @@ void main() {
     // The c-orbit is what MORPHS the set: main orbit, a shimmer epicycle,
     // and the audio pushing c directly.
     vec2 c = vec2(-.745, .186)
-           + vec2(sin(t * .37), cos(t * .29)) * .085
-           + vec2(sin(t * 1.7), cos(t * 2.3)) * .012 * uMid
-           + vec2(uBass * .06, uPulse * .03);
+           + vec2(sin(t * .37), cos(t * .29)) * .009
+           + vec2(sin(t * 1.7), cos(t * 2.3)) * .004 * uMid
+           + vec2(uBass * .006, uPulse * .008);
 
     vec2 z = p;
     vec2 dz = vec2(1.0, 0.0);
     float it = 0.0;
+    float trap = 1.0;
     bool esc = false;
     const int MAXI = 80;
     for (int i = 0; i < MAXI; i++) {
         dz = 2.0 * vec2(z.x * dz.x - z.y * dz.y, z.x * dz.y + z.y * dz.x);
         dz = clamp(dz, vec2(-1.0e6), vec2(1.0e6));
         z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+        trap = min(trap, abs(length(z) - .62));
         if (dot(z, z) > 64.0) { it = float(i); esc = true; break; }
     }
 
@@ -657,15 +675,17 @@ void main() {
     float zlen = length(z);
     float dlen = max(length(dz), 1.0e-6);
     float de = 0.5 * zlen * log(max(zlen, 1.0001)) / dlen;
-    float glow = clamp(exp(-de * 55.0 / scale), 0.0, 1.0);
+    float glow = esc ? clamp(exp(-de * 420.0 / scale), 0.0, 1.0) : 0.0;
 
     vec3 base = (uRainbow == 1)
-        ? hsv2rgb(vec3(fCol * .85 + t * .05 + uPhase * .4, .82, clamp(fCol * 1.15, 0., 1.)))
+        ? hsv2rgb(vec3(fCol * 2.8 + t * .025 + uBright * .3, .82, esc ? clamp(pow(fCol, .6) * 1.15, 0., 1.) : .008))
         : uAccent * clamp(fCol * 1.15, 0., 1.2);
     vec3 rim = (uRainbow == 1)
-        ? hsv2rgb(vec3(fract(uPhase * .6 + .55), .55, 1.))
+        ? hsv2rgb(vec3(fract(fCol * 1.8 + .55 + t * .025), .75, 1.))
         : uAccent;
-    vec3 col = base + rim * glow * .85;
+    float filament=exp(-trap*95.0);
+    vec3 col = base + rim * glow * .5;
+    if (!esc) col += rim * filament * (.15 + uMid * .5);
     frag = vec4(col * (.8 + uPulse * .6), 0.);
 }"#;
 
@@ -680,7 +700,7 @@ const FRAG_MATRIX: &str = r#"
 
 void main() {
     vec2 res = uRes;
-    float cellPx = 15.0;
+    float cellPx = mix(8.0, 28.0, uControls.x * .5);
     vec2 grid = max(res / cellPx, vec2(4.0));
     vec2 cellUv = vUv * grid;
     float col = floor(cellUv.x);
@@ -692,13 +712,14 @@ void main() {
     float colH2 = hash(vec2(col, 41.7));
 
     // Fraction of columns actually raining; uLoud thickens the storm.
-    float density = 0.42 + uLoud * 0.42;
+    float density = clamp((0.24 + uLoud * 0.44) * uControls.y, .0, .98);
     float colActive = step(1.0 - density, hash(vec2(col, 5.0)));
 
     // Fall speed rides bass energy plus the locked BPM (falls back to a
     // fixed rate when unlocked, so it still animates in silence).
     float bpmRate = uBpm > 0.0 ? uBpm / 60.0 : 1.8;
-    float speed = (4.0 + uBass * 11.0) * (0.6 + bpmRate * 0.5);
+    // Stable speeds avoid teleporting heads when the current bass changes.
+    float speed = (5.0 + colH * 9.0) * (.2 + uControls.z * .8);
     float cyc = grid.y + 10.0;
     float travel = uTime * speed + colH * 137.0;
     float headRow = (grid.y - 1.0) - mod(travel, cyc);
@@ -713,11 +734,14 @@ void main() {
     float burstHead2 = burstGate * burstAmt * step(abs(rowIdx - burstRow2), 0.5);
 
     float head = clamp(isHead + burstHead + burstHead2, 0.0, 1.0);
+    float distanceBehind = mod(rowIdx - headRow + cyc, cyc);
+    float trailLength = (5.0 + colH2 * 14.0) * (.15 + uControls.w * .85);
+    float body = exp(-distanceBehind / max(1., trailLength*.4)) * step(distanceBehind,trailLength) * colActive;
 
     // Hash-based blocky glyph inside the cell, mutated a few times a second;
     // treble speeds the mutation rate up into a flicker.
     float mutateRate = 2.0 + uTreb * 10.0;
-    float glyphTick = floor(uTime * mutateRate + colH * 13.0);
+    float glyphTick = floor(uTime * (2.0 + colH2 * 5.0) + colH * 13.0);
     vec2 sub = floor(cellFrac * 4.0);
     float gseed = hash(cellId * 1.37 + sub * 0.53 + glyphTick * 0.91);
     float glyphOn = step(0.5, gseed);
@@ -734,17 +758,18 @@ void main() {
     vec3 tint = (uRainbow == 1) ? hsv2rgb(vec3(hueBase, 0.85, 1.0)) : uAccent;
 
     float bodyLevel = (0.45 + 0.25 * uMid) * colActive;
-    float glow = clamp(head + flickGate * 0.4 * (1.0 - head), 0.0, 1.0);
+    float band = spec(col / grid.x);
+    float glow = clamp(head + body * (.3 + band*.6) + flickGate * 0.25 * (1.0 - head), 0.0, 1.0);
     vec3 srcCol = tint * mix(bodyLevel, 1.0, glow) * glow;
     srcCol = mix(srcCol, vec3(1.0), head * 0.85);
     srcCol *= glyphOn;
 
     vec3 prev = texture(uPrev, vUv).rgb;
-    prev = prev * (0.955 - uTreb * 0.01);
+    prev = prev * mix(.80,.975,uControls.w*.5);
     prev = max(prev - 0.004, vec3(0.0));
 
     vec3 outCol = max(prev, srcCol);
-    outCol += burstAmt * 0.05 * tint;
+    outCol += burstAmt * 0.06 * tint * glyphOn * body;
 
     frag = vec4(min(outCol, vec3(1.2)), 0.0);
 }"#;
@@ -1306,94 +1331,7 @@ void main() {
     frag = vec4(outCol, 1.0);
 }"#;
 
-const FRAG_LASER: &str = r#"
-// gl_laser: dark club laser show. Three fan origins (bottom-left corner,
-// bottom-right corner, top-center) each spray a fan of additive beams;
-// BPM-locked sweep via uPhase, spread widens with uMid, strobe/multiply on
-// uPulse + uFlux transients. fbm haze is lit by nearby beam brightness. A
-// compressed, faded re-evaluation of the same fan near the bottom edge
-// stands in for a floor reflection. uTreb adds one fast thin scanner beam
-// per origin. Trails via uPrev, hard-biased down so they can never blow out.
-
-vec3 lz_beams(vec2 p, float ar) {
-    vec2 org0 = vec2(-0.46 * ar, -0.52);
-    vec2 org1 = vec2(0.46 * ar, -0.52);
-    vec2 org2 = vec2(0.0, 0.50);
-    vec3 col = vec3(0.0);
-    float fanSpread = 0.20 + uMid * 0.40;
-    float strobe = 0.6 + uPulse * 1.7 + uFlux * 0.8;
-
-    for (int oi = 0; oi < 3; oi++) {
-        vec2 org = (oi == 0) ? org0 : (oi == 1) ? org1 : org2;
-        float baseA = (oi == 0) ? (0.30 * 3.14159) : (oi == 1) ? (0.70 * 3.14159) : (-0.5 * 3.14159);
-        float sweepDir = (oi == 0) ? 1.0 : (oi == 1) ? -1.0 : 1.3;
-        float sweep = sin(uPhase * 6.28318 * sweepDir + float(oi) * 2.1) * fanSpread;
-        float centerA = baseA + sweep;
-
-        for (int j = 0; j < 4; j++) {
-            float fj = float(j);
-            float a = centerA + (fj / 3.0 - 0.5) * fanSpread * 1.6;
-            vec2 dir = vec2(cos(a), sin(a));
-            vec2 rel = p - org;
-            float t = clamp(dot(rel, dir), 0.0, 1.7);
-            vec2 closest = org + dir * t;
-            float d = length(p - closest);
-            float atten = exp(-t * 0.85);
-            float core = exp(-d * d * 1100.0);
-            float halo = exp(-d * 42.0) * 0.30;
-            float e = spec(fract(fj / 4.0 + float(oi) * 0.33));
-            float bright = (core + halo) * atten * strobe * (0.6 + e * 0.7);
-            vec3 hue = (uRainbow == 1)
-                ? hsv2rgb(vec3(fract(a / 6.28318 + float(oi) * 0.33 + uTime * 0.04), 0.85, 1.0))
-                : uAccent;
-            col += hue * bright;
-        }
-
-        // fast thin treble scanner beam sweeping independently
-        float scanA = baseA + sin(uTime * (3.0 + uTreb * 9.0) + float(oi) * 1.7) * (fanSpread + 0.5);
-        vec2 sdir = vec2(cos(scanA), sin(scanA));
-        vec2 srel = p - org;
-        float st = clamp(dot(srel, sdir), 0.0, 1.7);
-        vec2 sclosest = org + sdir * st;
-        float sd = length(p - sclosest);
-        float sAtten = exp(-st * 0.7);
-        float sCore = exp(-sd * sd * 5000.0);
-        vec3 sHue = (uRainbow == 1)
-            ? hsv2rgb(vec3(fract(scanA / 6.28318 + 0.5), 0.3, 1.0))
-            : uAccent;
-        col += sHue * sCore * sAtten * uTreb * 2.2;
-    }
-    return col;
-}
-
-void main() {
-    float ar = uRes.x / uRes.y;
-    vec2 p = aspect(vUv);
-
-    vec3 col = lz_beams(p, ar);
-
-    // faint floor reflection: compressed + faded re-evaluation near the bottom edge
-    float floorY = -0.5;
-    vec2 rp = vec2(p.x, floorY - (p.y - floorY) * 0.35 - 0.015);
-    vec3 refl = lz_beams(rp, ar);
-    float fade = 1.0 - smoothstep(-0.42, 0.05, p.y);
-    col += refl * fade * 0.22;
-
-    // volumetric haze: fbm fog lit by nearby beam brightness
-    float fogN = fbm(vUv * 3.2 + vec2(uTime * 0.03, -uTime * 0.02));
-    fogN += fbm(vUv * 6.5 - vec2(uTime * 0.05, uTime * 0.015)) * 0.5;
-    vec3 hazeCol = (uRainbow == 1) ? hsv2rgb(vec3(0.58 + uTime * 0.015, 0.35, 1.0)) : uAccent;
-    float lum = dot(col, vec3(0.299, 0.587, 0.114));
-    col += hazeCol * fogN * (0.045 + lum * 0.5) * 0.5;
-
-    // feedback trail: hard bias down so it can never pile to blown white
-    vec3 prev = texture(uPrev, vUv).rgb * 0.90 - 0.006;
-    prev = max(prev, vec3(0.0));
-    col = max(col, prev);
-
-    col = max(col, vec3(0.0));
-    frag = vec4(col, 0.0);
-}"#;
+const FRAG_LASER: &str = include_str!("shaders/laser.glsl");
 
 const FRAG_DISCOBALL: &str = r#"
 // gl_discoball: mirror ball center-stage. fake-3D sphere shading, a
@@ -1885,76 +1823,7 @@ void main() {
     frag = vec4(col, 0.0);
 }"#;
 
-const FRAG_COPPER: &str = r#"
-// gl_copper — Amiga demoscene copper bars. Ten bright horizontal raster
-// bars, each bouncing on its own sine phase locked to the BPM grid, bar
-// thickness pumping on bass, additive crossings glowing hotter, per-bar
-// hue cycling (rainbow) or accent shading, treble scanline shimmer.
-
-float cop_falloff(float d, float w) {
-    // Bright core fading softly both ways (up AND down) from the bar center.
-    float core = exp(-(d * d) / (w * w * 0.35));
-    float halo = exp(-(d * d) / (w * w * 3.2)) * 0.35;
-    return core + halo;
-}
-
-vec3 cop_barColor(float idx, float n, float energy) {
-    if (uRainbow == 1) {
-        float hue = fract(idx / n + uTime * 0.045 + uPulse * 0.08);
-        return hsv2rgb(vec3(hue, 0.82, 1.0));
-    }
-    float shade = 0.55 + 0.45 * sin(idx * 1.7 + uTime * 0.35);
-    return uAccent * (0.6 + shade * 0.6) + uAccent * energy * 0.15;
-}
-
-void main() {
-    vec2 uv = vUv;
-
-    // Trail feedback biased hard down: never lets the raster pile to white.
-    vec3 trail = texture(uPrev, uv).rgb * 0.90 - 0.006;
-    trail = max(trail, vec3(0.0));
-
-    float thickness = 0.020 + uBass * 0.045 + uPulse * 0.01;
-    float nBars = 10.0;
-    vec3 col = vec3(0.0);
-
-    for (int i = 0; i < 10; i++) {
-        float fi = float(i);
-
-        // Per-bar unique bounce speed via a golden-ratio spread, driven off
-        // the BPM-locked phase grid so every bar stays in the pocket even as
-        // it drifts out of sync with its neighbours.
-        float speedMul = 0.55 + fract(fi * 0.6180339) * 1.15;
-        float basePhase = uPhase * 6.28318 * speedMul + fi * 2.39996;
-        float drift = uTime * (0.10 + speedMul * 0.06);
-        float bounce = sin(basePhase + drift) * 0.5
-                      + sin(basePhase * 1.9 + drift * 1.3 + fi) * 0.14;
-        float centerY = 0.5 + bounce * 0.42;
-
-        float d = uv.y - centerY;
-        float bar = cop_falloff(d, thickness);
-
-        float energy = spec(fi / nBars);
-        bar *= 0.5 + energy * 1.3 + uPulse * 0.55;
-
-        col += cop_barColor(fi, nBars, energy) * bar;
-    }
-
-    // Additive crossings read hotter automatically from the sum above; push
-    // the brightest overlaps a touch further for that copper-bar glare.
-    col += col * col * 0.12;
-
-    // Treble-driven scanline shimmer, classic raster interference look.
-    float scan = sin(uv.y * uRes.y * 1.35 + uTime * 24.0) * 0.5 + 0.5;
-    col *= 1.0 + scan * uTreb * 0.30;
-    float interlace = fract(uv.y * uRes.y * 0.5);
-    col *= 0.92 + 0.08 * interlace;
-
-    col = max(col, trail);
-    col = min(col, vec3(1.25));
-
-    frag = vec4(col, 1.0);
-}"#;
+const FRAG_COPPER: &str = include_str!("shaders/copper.glsl");
 
 const FRAG_LEDWALL: &str = r#"
 // gl_ledwall — stadium LED matrix wall. 64x36 coarse cell grid (64 columns
@@ -2106,7 +1975,7 @@ void main() {
             float e = spec(fi / 24.0);
             vec2 bp = vec2(cos(ba), sin(ba)) * (0.06 + e * (scopeR - 0.10));
             float d = length(c - bp);
-            float blip = smoothstep(0.03 + e * 0.02, 0.0, d) * (0.35 + e * 1.3);
+            float blip = smoothstep(0.012 + e * 0.014, 0.0, d) * (0.35 + e * 1.3);
             vec3 bc = (uRainbow == 1)
                 ? hsv2rgb(vec3(fract(0.30 + fi * 0.02 + uTime * 0.015), 0.85, 1.0))
                 : phosphor;
@@ -2117,7 +1986,7 @@ void main() {
         // beat-phase sawtooth (falls back to a free-running pulse if the
         // deck never locks a tempo).
         float pingPh = (uBpm > 1.0) ? uPhase : fract(uTime * 0.6);
-        float ping = sn_ring(r, pingPh * scopeR * 0.95, 0.05) * (1.0 - pingPh);
+        float ping = sn_ring(r, pingPh * scopeR * 0.95, 0.018) * (1.0 - pingPh);
         col += phosphor * ping * (0.5 + uPulse * 1.6);
 
         // Fine CRT grain, brighter with treble.
@@ -2135,7 +2004,8 @@ void main() {
     float vig = smoothstep(0.86, 0.15, length(vUv - 0.5));
     col *= vig;
 
-    col += prev;
+    col = 1.0 - exp(-max(col,vec3(0.0))*1.5);
+    col = max(col,prev);
     col = min(col, vec3(1.2));
 
     frag = vec4(col, 1.0);
@@ -2157,7 +2027,7 @@ float pu_beam(vec2 c, float beamAngle) {
     float r = length(c);
     float ang = atan(c.y, c.x);
     float da = pu_wrap(ang - beamAngle);
-    float halfWidth = 0.05 + 0.11 / (r + 0.16);
+    float halfWidth = 0.035 + 0.045 / (r + 0.16);
     float falloff = smoothstep(halfWidth, 0.0, abs(da));
     float reach = smoothstep(1.15, 0.05, r);
     return falloff * reach;
@@ -2211,11 +2081,12 @@ void main() {
     }
 
     // Neutron star core: tiny, blinding, pulses with bass + the beat.
-    float glow = exp(-r * r * 46.0) * (0.55 + uBass * 0.55 + uPulse * 0.7);
+    float glow = exp(-r * r * 180.0) * (0.55 + uBass * 0.55 + uPulse * 0.7);
     col += mix(tint, vec3(1.0), 0.7) * glow;
     col += vec3(1.0) * smoothstep(0.022, 0.0, r) * (0.75 + uPulse * 0.6);
 
-    col += prev;
+    col = 1.0 - exp(-max(col,vec3(0.0)));
+    col = max(col,prev);
     col = min(col, vec3(1.18));
 
     frag = vec4(col, 1.0);
@@ -2427,17 +2298,9 @@ void main() {
     frag = vec4(max(prev, col), 1.);
 }"#;
 
-const FRAG_TUNNEL: &str = r#"
-void main() {
-    vec2 p = aspect(vUv);
-    float r = length(p);
-    float a = atan(p.y, p.x);
-    float shape = r * (1. + .07 * sin(a * 6. + uTime * .3));
-    float rings = abs(fract(-log(max(shape, .001)) * 1.8 - uTime * .7 - uBass * .2) - .5);
-    float beam = exp(-rings * 90.) * smoothstep(.02, .16, r);
-    vec3 c = uRainbow == 1 ? hsv2rgb(vec3(a / 6.283 + r * .4 + uTime * .03, .8, 1.)) : uAccent;
-    frag = vec4(c * beam * (.7 + spec(fract(a / 6.283)) * .8), 1.);
-}"#;
+const FRAG_TUNNEL: &str = include_str!("shaders/tunnel.glsl");
+const FRAG_STEREO: &str = include_str!("shaders/stereo.glsl");
+const FRAG_SPECTROGRAM: &str = include_str!("shaders/spectrogram.glsl");
 
 const FRAG_PARTICLES: &str = r#"
 void main() {
@@ -2462,7 +2325,9 @@ in vec2 vUv;
 out vec4 frag;
 uniform sampler2D uTex;
 uniform float uBrightness;
-void main() { frag = vec4(texture(uTex, vUv).rgb * uBrightness, 1.); }
+uniform sampler2D uOther;
+uniform float uCrossfade;
+void main() { frag = vec4(mix(texture(uTex, vUv).rgb, texture(uOther,vUv).rgb, uCrossfade) * uBrightness, 1.); }
 "#;
 
 const FRAG_COMPOSE: &str = r#"#version 330 core
@@ -2472,8 +2337,22 @@ uniform sampler2D uTex;
 uniform sampler2D uFrom;
 uniform float uBrightness;
 uniform float uFade;
+uniform float uHue;
+uniform float uSaturation;
+uniform vec4 uTransform;
 void main() {
-    vec3 current = clamp(texture(uTex, vUv).rgb * uBrightness, 0., 1.);
+    vec2 p=(vUv-0.5)/max(0.5,uTransform.x);
+    float c=cos(uTransform.y),s=sin(uTransform.y);
+    vec2 uv=mat2(c,-s,s,c)*p+0.5+uTransform.zw;
+    float inside=step(0.,uv.x)*step(uv.x,1.)*step(0.,uv.y)*step(uv.y,1.);
+    vec3 current = clamp(texture(uTex, uv).rgb * uBrightness, 0., 1.)*inside;
+    // Rotate around the neutral axis; at defaults the original scene is exact.
+    vec3 axis = normalize(vec3(1.));
+    float angle = uHue * 6.2831853;
+    current = current*cos(angle) + cross(axis,current)*sin(angle)
+        + axis*dot(axis,current)*(1.-cos(angle));
+    current = mix(vec3(dot(current,vec3(.2126,.7152,.0722))),current,uSaturation);
+    current = clamp(current,0.,1.);
     frag = vec4(mix(texture(uFrom, vUv).rgb, current, uFade), 1.);
 }
 "#;
@@ -2486,6 +2365,7 @@ out vec4 frag;
 uniform sampler2D uTex;
 uniform int   uFx;
 uniform float uMix;
+uniform float uFlash;
 uniform vec2  uRes;
 uniform float uTime;
 uniform float uPulse;
@@ -2579,7 +2459,7 @@ void main() {
 
     // bit 7 STROBE: brief white lift right when uPhase wraps, scaled by loud.
     if ((uFx & 128) != 0) {
-        float amt = (1.0 - smoothstep(0.0, 0.06, uPhase)) * uLoud;
+        float amt = uFlash>=0.0 ? uFlash : (1.0 - smoothstep(0.0, 0.06, uPhase)) * uLoud;
         col = mix(col, vec3(1.0), amt * 0.8);
     }
 
@@ -2655,6 +2535,11 @@ const PROGRAM_SRC: [&str; MODE_COUNT] = [
     FRAG_TRAILS,
     FRAG_TUNNEL,
     FRAG_PARTICLES,
+    FRAG_STEREO,
+    FRAG_SPECTROGRAM,
+    include_str!("shaders/spectral_city.glsl"),
+    include_str!("shaders/cymatics.glsl"),
+    include_str!("shaders/stereo_orbit.glsl"),
 ];
 
 impl GlStage {
@@ -2719,6 +2604,11 @@ impl GlStage {
                 glow::TEXTURE_2D, 0, glow::R32F as i32, WAVE_W as i32, 1, 0,
                 glow::RED, glow::FLOAT, glow::PixelUnpackData::Slice(None),
             );
+            let stereo_tex = mk_tex()?;
+            gl.tex_image_2d(
+                glow::TEXTURE_2D, 0, glow::RG32F as i32, STEREO_W as i32, 1, 0,
+                glow::RG, glow::FLOAT, glow::PixelUnpackData::Slice(None),
+            );
             let hist_tex = mk_tex()?;
             let zeros = vec![0u8; SPEC_W * HIST_ROWS * 4];
             gl.tex_image_2d(
@@ -2735,6 +2625,8 @@ impl GlStage {
             gl.bind_texture(glow::TEXTURE_2D, None);
 
             Ok(GlStage {
+                replay:None,output:crate::viz_compositor::Output::new(gl)?,
+                deck_b: None, pending_b: None,
                 prog,
                 present,
                 post,
@@ -2749,6 +2641,7 @@ impl GlStage {
                 size: (0, 0),
                 spec_tex,
                 wave_tex,
+                stereo_tex,
                 hist_tex,
                 hist_row: 0,
                 frame: 0,
@@ -2756,6 +2649,7 @@ impl GlStage {
                 sim: 0.0,
                 last_paint: None,
                 last_mode: None,
+                last_epoch: 0, clear_history: false,
                 accumulator: 0.0,
                 fade_elapsed: 0.0,
                 fade_duration: 0.0,
@@ -2818,8 +2712,26 @@ impl GlStage {
         RenderStats { width: self.size.0, height: self.size.1, gpu_ms: self.timer.milliseconds }
     }
 
+    /// Release an isolated stage while its GL context is still current.
+    pub fn destroy(self, gl: &glow::Context) {
+        self.output.destroy(gl);
+        if let Some(deck) = self.deck_b { deck.destroy(gl); }
+        unsafe {
+            for program in self.prog { gl.delete_program(program); }
+            for program in [self.present, self.post, self.compose] { gl.delete_program(program); }
+            for fbo in self.fbo.into_iter().chain(self.post_fbo).chain(self.display_fbo) { gl.delete_framebuffer(fbo); }
+            for tex in self.tex.into_iter().chain(self.post_tex).chain(self.display_tex)
+                .chain([self.spec_tex, self.wave_tex, self.hist_tex, self.stereo_tex]) { gl.delete_texture(tex); }
+            gl.delete_vertex_array(self.vao);
+            self.timer.destroy(gl);
+        }
+    }
+
     /// Off must not resurrect a cached scene or crossfade from an invisible old frame.
     pub fn suspend(&mut self) {
+        self.output.reset();
+        self.pending_b=None;
+        if let Some(deck)=&mut self.deck_b {deck.suspend();}
         self.last_mode = None;
         self.last_paint = None;
         self.fade_duration = 0.0;
@@ -2829,10 +2741,15 @@ impl GlStage {
     /// egui_glow's own viewport for this callback: [left_px, from_bottom_px,
     /// width_px, height_px] (GL bottom-origin).
     pub fn paint(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4]) {
+        if let Some(frames)=self.replay.take(){
+            if frames.is_empty(){self.output.present(gl,vp);}
+            for frame in frames {if frame.swap{self.swap_decks();}self.set_deck_b(frame.b);self.paint_elapsed(gl,&frame.a,vp,frame.dt);}
+            self.last_paint=Some(Instant::now());return;
+        }
         let now = Instant::now();
         let elapsed = self.last_paint.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(1.0 / 60.0);
         self.last_paint = Some(now);
-        self.paint_elapsed(gl, u, vp, elapsed);
+        self.paint_elapsed(gl, u, vp, u.step_seconds.unwrap_or(elapsed));
     }
 
     /// All scenes, including feedback, use the same 60 Hz simulation clock.
@@ -2841,11 +2758,63 @@ impl GlStage {
         if vp[2] < 8 || vp[3] < 8 { return; }
         let timing = self.timer.begin(gl);
         self.paint_timed(gl, u, vp, elapsed);
+        let mut incoming=None;
+        if let Some((other,mix))=self.pending_b {
+            if self.deck_b.is_none() { self.deck_b=Self::new(gl).ok().map(Box::new); }
+            if let Some(deck)=&mut self.deck_b {
+                deck.paint_timed(gl,&other,vp,elapsed);
+                let texture=deck.display_tex[0];
+                incoming=Some((texture,mix,deck.spec_tex));
+            }
+        }
+        self.output.render(gl,self.display_tex[0],incoming,self.spec_tex,u,self.size,vp,elapsed);
         crate::render_timer::RenderTimer::end(gl, timing);
     }
 
+    pub fn set_deck_b(&mut self, value:Option<(Uniforms,f32)>) { self.pending_b=value; }
+    pub fn set_replay(&mut self,value:Option<Vec<ReplayFrame>>){self.replay=value;}
+
+    /// Preserve feedback, spectrum history and simulation time when taking B live.
+    pub fn swap_decks(&mut self) {
+        if let Some(mut deck)=self.deck_b.take() {
+            let pending=self.pending_b.take();
+            let last_paint=self.last_paint;
+            let replay=self.replay.take();
+            std::mem::swap(self,deck.as_mut());
+            std::mem::swap(&mut self.output,&mut deck.output);
+            self.deck_b=Some(deck);
+            self.pending_b=pending;
+            self.last_paint=last_paint;
+            self.replay=replay;
+        }
+    }
+
+    fn present_mix(&self,gl:&glow::Context,vp:[i32;4],other:glow::Texture,mix:f32) {
+        unsafe {
+            gl.viewport(vp[0],vp[1],vp[2],vp[3]);gl.enable(glow::SCISSOR_TEST);gl.disable(glow::BLEND);
+            gl.use_program(Some(self.present));gl.active_texture(glow::TEXTURE0);gl.bind_texture(glow::TEXTURE_2D,Some(self.display_tex[0]));
+            gl.active_texture(glow::TEXTURE6);gl.bind_texture(glow::TEXTURE_2D,Some(other));
+            gl.uniform_1_i32(gl.get_uniform_location(self.present,"uTex").as_ref(),0);
+            gl.uniform_1_i32(gl.get_uniform_location(self.present,"uOther").as_ref(),6);
+            gl.uniform_1_f32(gl.get_uniform_location(self.present,"uCrossfade").as_ref(),mix.clamp(0.0,1.0));
+            gl.uniform_1_f32(gl.get_uniform_location(self.present,"uBrightness").as_ref(),1.0);
+            gl.bind_vertex_array(Some(self.vao));gl.draw_arrays(glow::TRIANGLES,0,3);gl.bind_vertex_array(None);
+        }
+    }
+
     fn paint_timed(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4], elapsed: f32) {
+        if self.last_epoch != u.epoch {
+            self.last_epoch = u.epoch;
+            self.last_mode = None;
+            self.fade_duration = 0.0;
+            self.hist_row = 0;
+            self.frame = 0;
+            self.clear_history = true;
+        }
         let resized = self.size != render_size(vp, u.render_scale);
+        if u.freeze && !resized && self.last_mode==Some(u.mode) {
+            self.present_mix(gl,vp,self.display_tex[0],0.0);return;
+        }
         let changed = self.last_mode != Some(u.mode);
         if changed && !resized && self.last_mode.is_some() && u.transition_seconds > 0.0 {
             // Capture the last composed image, including any interrupted fade.
@@ -2925,6 +2894,11 @@ impl GlStage {
             );
             gl.active_texture(glow::TEXTURE3);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.hist_tex));
+            if self.clear_history {
+                let blank = [0u8; SPEC_W * HIST_ROWS * 4];
+                gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, SPEC_W as i32, HIST_ROWS as i32, glow::RED, glow::FLOAT, glow::PixelUnpackData::Slice(Some(&blank)));
+                self.clear_history = false;
+            }
             if advance && self.frame % 2 == 0 {
                 gl.tex_sub_image_2d(
                     glow::TEXTURE_2D, 0, 0, self.hist_row as i32, SPEC_W as i32, 1,
@@ -2932,6 +2906,11 @@ impl GlStage {
                 );
                 self.hist_row = (self.hist_row + 1) % HIST_ROWS;
             }
+            gl.active_texture(glow::TEXTURE5);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.stereo_tex));
+            let stereo_bytes = core::slice::from_raw_parts(u.stereo.as_ptr() as *const u8, STEREO_W * 8);
+            gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, STEREO_W as i32, 1,
+                glow::RG, glow::FLOAT, glow::PixelUnpackData::Slice(Some(stereo_bytes)));
 
             // Offscreen feedback pass. Scissor must be OFF here (egui's window
             // scissor would clip the FBO), blend off (we own every pixel).
@@ -2951,6 +2930,7 @@ impl GlStage {
             gl.uniform_1_i32(loc("uSpec").as_ref(), 1);
             gl.uniform_1_i32(loc("uWave").as_ref(), 2);
             gl.uniform_1_i32(loc("uHist").as_ref(), 3);
+            gl.uniform_1_i32(loc("uStereo").as_ref(), 5);
             gl.uniform_1_f32(loc("uHistRow").as_ref(), self.hist_row as f32 / HIST_ROWS as f32);
             gl.uniform_2_f32(loc("uRes").as_ref(), w as f32, h as f32);
             gl.uniform_1_f32(loc("uTime").as_ref(), self.sim);
@@ -2969,6 +2949,9 @@ impl GlStage {
             gl.uniform_1_f32(loc("uCrest").as_ref(), u.crest);
             gl.uniform_1_f32(loc("uCorr").as_ref(), u.corr);
             gl.uniform_1_f32(loc("uWidth").as_ref(), u.width);
+            gl.uniform_4_f32(loc("uControls").as_ref(), u.controls[0], u.controls[1], u.controls[2], u.controls[3]);
+            gl.uniform_4_f32(loc("uDetails").as_ref(), u.details[0], u.details[1], u.details[2], u.details[3]);
+            gl.uniform_1_i32(loc("uVariant").as_ref(), u.variant as i32);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             }
@@ -2994,6 +2977,7 @@ impl GlStage {
                 gl.uniform_1_i32(ploc("uTex").as_ref(), 0);
                 gl.uniform_1_i32(ploc("uFx").as_ref(), order[i] as i32);
                 gl.uniform_1_f32(ploc("uMix").as_ref(), mixes[i]);
+                gl.uniform_1_f32(ploc("uFlash").as_ref(), u.flash);
                 gl.uniform_2_f32(ploc("uRes").as_ref(), w as f32, h as f32);
                 gl.uniform_1_f32(ploc("uTime").as_ref(), self.sim);
                 gl.uniform_1_f32(ploc("uPulse").as_ref(), u.pulse);
@@ -3018,6 +3002,9 @@ impl GlStage {
             gl.uniform_1_i32(cloc("uTex").as_ref(), 0);
             gl.uniform_1_i32(cloc("uFrom").as_ref(), 4);
             gl.uniform_1_f32(cloc("uBrightness").as_ref(), u.brightness);
+            gl.uniform_4_f32(cloc("uTransform").as_ref(),u.transform[0],u.transform[1],u.transform[2],u.transform[3]);
+            gl.uniform_1_f32(cloc("uHue").as_ref(), u.hue);
+            gl.uniform_1_f32(cloc("uSaturation").as_ref(), u.saturation);
             let fade = if self.fade_duration > 0.0 { (self.fade_elapsed / self.fade_duration).clamp(0.0, 1.0) } else { 1.0 };
             gl.uniform_1_f32(cloc("uFade").as_ref(), fade * fade * (3.0 - 2.0 * fade));
             gl.bind_vertex_array(Some(self.vao));
@@ -3039,6 +3026,8 @@ impl GlStage {
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.display_tex[0]));
             gl.uniform_1_i32(gl.get_uniform_location(self.present, "uTex").as_ref(), 0);
+            gl.uniform_1_i32(gl.get_uniform_location(self.present, "uOther").as_ref(), 0);
+            gl.uniform_1_f32(gl.get_uniform_location(self.present, "uCrossfade").as_ref(), 0.0);
             gl.uniform_1_f32(gl.get_uniform_location(self.present, "uBrightness").as_ref(), 1.0);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
