@@ -175,6 +175,60 @@ impl Palette {
         }
     }
 
+    /// The colour the user actually chose, as best this palette can tell: the
+    /// single stored hex for an accent-derived theme (`from_accent`), else the
+    /// accent itself. The two agree on the accent path; the stored hex is the
+    /// authority because that is what gets persisted and reloaded.
+    fn intent_seed(&self) -> Rgb {
+        match self.source.as_slice() {
+            [hex] => color::hex_to_rgb(hex),
+            _ => None,
+        }
+        .unwrap_or_else(|| rgb_of(self.accent))
+    }
+
+    /// The accent AS INK on the inset surface. The raw `accent` stays a fill
+    /// colour; this is the same hue walked until APCA says it clears the muted
+    /// floor. `theme::cyan()` is this for the live palette.
+    fn accent_ink(&self) -> Color32 {
+        c32(color::readable_against(rgb_of(self.accent), rgb_of(self.panel2), color::LC_MUTED))
+    }
+
+    /// Accent ink for text that sits directly on the window fill (`panel`),
+    /// like the About hyperlinks, which `accent_ink` does not cover because
+    /// it checks against the inset surface only.
+    fn link_ink(&self) -> Color32 {
+        c32(color::readable_against(rgb_of(self.accent_ink()), rgb_of(self.panel), color::LC_MUTED))
+    }
+
+    /// This palette's counterpart in the other mode, with the user's intent
+    /// kept. Pure apart from the accent-seed record `from_accent` makes, so the
+    /// flip can be tested without a UI context.
+    ///
+    /// The classic pair (Electric Cyan and Paper, which have no source list)
+    /// keeps its exact hand-tuned values: those are the shipped defaults and
+    /// are not derived. Everything else re-derives from its own accent through
+    /// the ladder: a custom or preset-synced accent, a premade, Random,
+    /// Synthwave. The old flip swapped all of those to the classic literals,
+    /// which dropped the pick and then let `set_palette` overwrite the recorded
+    /// seed with Paper's accent, so the colour was gone after one click.
+    ///
+    /// "Accent-derived" is keyed on a single stored hex, not on the name:
+    /// preset sync renames the palette but keeps that one source.
+    pub fn for_mode(&self, dark: bool) -> Palette {
+        if self.dark == dark {
+            return self.clone();
+        }
+        if self.source.is_empty() && matches!(self.name.as_str(), "Electric Cyan" | "Paper") {
+            return if dark { Palette::electric_cyan() } else { Palette::paper() };
+        }
+        let mut p = Palette::from_accent(self.intent_seed(), dark);
+        if self.source.len() == 1 && !self.name.is_empty() {
+            p.name = self.name.clone();
+        }
+        p
+    }
+
     /// Derive a full theme from a color list via colormagic: AutoTheme picks
     /// bg/surface/primary, then contrast rules guarantee readable text and a
     /// viz accent that pops on the canvas — randomize all day, stays pretty.
@@ -454,13 +508,7 @@ pub fn set_gradient(ctx: &egui::Context, on: bool) {
 /// built-in with no source or a palette derived from a colour list, has its own
 /// accent as the intent.
 pub fn set_palette(ctx: &egui::Context, p: Palette) {
-    let seed = if p.source.len() == 1 {
-        color::hex_to_rgb(&p.source[0])
-    } else {
-        None
-    }
-    .unwrap_or_else(|| rgb_of(p.accent));
-    set_accent_seed(seed);
+    set_accent_seed(p.intent_seed());
 
     *CURRENT.write().unwrap() = p.enforce_readability();
     ctx.set_visuals(build_visuals());
@@ -476,10 +524,12 @@ pub fn dark_mode() -> bool {
     CURRENT.read().unwrap().dark
 }
 
-/// Legacy toggle: swaps between the two classic built-ins. (Arbitrary themes
-/// are picked in SETUP; this stays as the quick toolbar flip.)
+/// The quick Light/Dark flip. The classic pair swaps between themselves; any
+/// other palette keeps its accent and re-derives the chrome for the new mode
+/// (see [`Palette::for_mode`]). Arbitrary themes are still picked in the Theme
+/// window.
 pub fn set_mode(ctx: &egui::Context, dark: bool) {
-    set_palette(ctx, if dark { Palette::electric_cyan() } else { Palette::paper() });
+    set_palette(ctx, current().for_mode(dark));
 }
 
 // ---- Chrome accessors --------------------------------------------------------
@@ -515,12 +565,7 @@ pub fn muted() -> Color32 {
 /// Cheap: `readable_against` returns immediately when the pair already passes,
 /// so the walk only runs for palettes that actually need rescuing.
 pub fn cyan() -> Color32 {
-    let p = CURRENT.read().unwrap();
-    c32(color::readable_against(
-        rgb_of(p.accent),
-        rgb_of(p.panel2),
-        color::LC_MUTED,
-    ))
+    CURRENT.read().unwrap().accent_ink()
 }
 /// Make ANY colour safe to draw as ink on the current chrome.
 ///
@@ -733,7 +778,10 @@ fn build_visuals() -> egui::Visuals {
     v.extreme_bg_color = p.bg;
     v.faint_bg_color = p.panel2;
     v.override_text_color = Some(p.text);
-    v.hyperlink_color = p.accent;
+    // Links are text on the window fill: ink, not fill, so the raw accent is
+    // walked like every other accent-coloured label (a pale pick on a light
+    // panel used to make the About links vanish).
+    v.hyperlink_color = p.link_ink();
     v.selection.bg_fill = p.accent.gamma_multiply(0.30);
     v.selection.stroke = Stroke::new(1.0, p.accent);
 
@@ -1139,6 +1187,120 @@ mod tests {
                 let lc = color::apca_abs(rgb_of(p.muted), rgb_of(p.panel));
                 assert!(lc >= color::LC_MUTED, "muted text is Lc {lc:.1} for {seed:?} dark={dark}");
             }
+        }
+    }
+
+    /// THE FLIP KEEPS THE PICK. Dark -> light -> dark on an accent-derived
+    /// theme must land on the accent the user chose, with the same chrome the
+    /// picker itself would have produced for that mode. The old flip swapped
+    /// to the Paper / Electric Cyan literals and the pick was gone.
+    #[test]
+    fn for_mode_keeps_a_custom_accent_across_the_flip() {
+        for start_dark in MODES {
+            for seed in SEEDS {
+                let start = Palette::from_accent(seed, start_dark);
+                let flipped = start.for_mode(!start_dark);
+                assert_eq!(flipped.dark, !start_dark, "mode did not flip for {seed:?}");
+                assert_eq!(rgb_of(flipped.accent), seed, "flip lost the accent for {seed:?}");
+                let direct = Palette::from_accent(seed, !start_dark);
+                for (label, a, b) in [
+                    ("bg", flipped.bg, direct.bg),
+                    ("panel", flipped.panel, direct.panel),
+                    ("panel2", flipped.panel2, direct.panel2),
+                    ("text", flipped.text, direct.text),
+                ] {
+                    assert_eq!(a, b, "flipped {label} differs from a direct derive for {seed:?}");
+                }
+                let back = flipped.for_mode(start_dark);
+                assert_eq!(rgb_of(back.accent), seed, "round trip lost the accent for {seed:?}");
+                assert_eq!(back.dark, start_dark);
+            }
+        }
+    }
+
+    /// The classic pair is the shipped default and stays exactly hand-tuned.
+    #[test]
+    fn for_mode_classic_pair_keeps_its_literals() {
+        let light = Palette::electric_cyan().for_mode(false);
+        assert_eq!(light.name, "Paper");
+        assert_eq!((light.bg, light.panel, light.accent), (LIGHT_BG, LIGHT_PANEL, LIGHT_CYAN));
+        let dark = Palette::paper().for_mode(true);
+        assert_eq!(dark.name, "Electric Cyan");
+        assert_eq!((dark.bg, dark.panel, dark.accent), (BG, PANEL, CYAN));
+    }
+
+    /// Asking for the mode a palette is already in is a no-op, not a reset to
+    /// the classic built-in (the startup path relies on neither surprising).
+    #[test]
+    fn for_mode_same_mode_is_identity() {
+        let p = Palette::from_accent([140, 60, 200], false);
+        let same = p.for_mode(false);
+        assert_eq!((same.name.as_str(), same.accent, same.bg), (p.name.as_str(), p.accent, p.bg));
+        let syn = Palette::synthwave().for_mode(true);
+        assert_eq!(syn.name, "Synthwave");
+    }
+
+    /// Everything that is not the classic pair re-derives from its own accent:
+    /// Synthwave and every premade keep their colour through a flip instead of
+    /// collapsing to cyan/paper.
+    #[test]
+    fn for_mode_keeps_the_accent_of_builtins_and_premades() {
+        let syn = Palette::synthwave();
+        let flipped = syn.for_mode(false);
+        assert!(!flipped.dark);
+        assert_eq!(flipped.accent, syn.accent, "Synthwave lost its magenta on flip");
+
+        for pp in color::PREMADE_PALETTES {
+            let p = Palette::premade(pp.name).expect("premade parses");
+            let f = p.for_mode(!p.dark);
+            assert_eq!(f.dark, !p.dark, "{} did not flip", pp.name);
+            assert_eq!(f.accent, p.accent, "{} lost its accent on flip", pp.name);
+        }
+    }
+
+    /// Preset sync renames the palette but keeps ONE source hex. The flip must
+    /// key on that, keep the label, and the result must survive the
+    /// persist/resolve round trip with the right mode.
+    #[test]
+    fn for_mode_keeps_a_preset_synced_name_and_round_trips() {
+        let mut p = Palette::from_accent([253, 79, 80], true);
+        p.name = "Galaxy Punch".into();
+        let l = p.for_mode(false);
+        assert_eq!(l.name, "Galaxy Punch");
+        assert_eq!(l.source, p.source);
+        assert!(!l.dark);
+
+        let restored = Palette::resolve(&l.name, &l.source, l.dark);
+        assert!(!restored.dark);
+        assert_eq!(restored.accent, l.accent);
+        assert_eq!(restored.bg, l.bg);
+        for (n, _) in GRADIENT_PRESETS {
+            assert!(
+                !matches!(*n, "Electric Cyan" | "Paper" | "Synthwave"),
+                "preset name {n} would be shadowed by a built-in in resolve()"
+            );
+        }
+    }
+
+    /// Hyperlinks are ink on the window fill: they must clear the muted floor
+    /// there for every seed and mode, and never be WORSE than the raw accent
+    /// for any shipped palette.
+    #[test]
+    fn link_ink_reads_on_the_window_fill() {
+        for dark in MODES {
+            for seed in SEEDS {
+                let p = Palette::from_accent(seed, dark);
+                let lc = color::apca_abs(rgb_of(p.link_ink()), rgb_of(p.panel));
+                assert!(lc >= color::LC_MUTED, "link ink is Lc {lc:.1} for {seed:?} dark={dark}");
+            }
+        }
+        let mut shipped = vec![Palette::electric_cyan(), Palette::paper(), Palette::synthwave()];
+        shipped.extend(color::PREMADE_PALETTES.iter().filter_map(|pp| Palette::premade(pp.name)));
+        for p in shipped {
+            let raw = color::apca_abs(rgb_of(p.accent), rgb_of(p.panel));
+            let ink = color::apca_abs(rgb_of(p.link_ink()), rgb_of(p.panel));
+            assert!(ink + 0.01 >= raw, "{}: link ink (Lc {ink:.1}) is worse than raw accent (Lc {raw:.1})", p.name);
+            assert!(ink >= color::LC_MUTED, "{}: link ink is Lc {ink:.1}", p.name);
         }
     }
 }
