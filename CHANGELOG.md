@@ -1,5 +1,105 @@
 # Changelog
 
+## [0.18.0] - 2026-10-13
+
+- Adaptive signal response with per-source range adaptation, attack and release,
+  quiet-input gating, live original/processed meters, and Musical/Percussive/
+  Flowing presets. Original response remains the default for existing looks.
+- Cross-deck Displace, Flow and Light modes with direction, strength, field scale,
+  angle and softness controls, all routable from the patch bay. Three combination
+  presets provide starting points. Clean A/B endpoints and Take B continuity.
+- Rebuilt Kaleido as a mirrored spectral lattice and Copper as distinct metallic
+  ribbons. Sharper Laser beams, Julia filaments, and detailed Sonar/Pulsar trails
+  replace washed-out feedback. Twelve additional routable scene controls.
+- Signal settings survive saved looks and deck B editing; distortion is preserved
+  in settings, visual undo and resolved performance recordings.
+
+## [0.17.1] - 2026-10-12
+
+- Show the compiled application version beside the name in the main title bar.
+  The version remains visible in compact windows and shares the title-bar drag
+  behavior. It follows the theme and global text outline.
+
+## [0.17.0] - 2026-10-12
+
+- Add a live patch bay with two-source combinations, editable response curves,
+  smoothing and intensity ranges.
+- Add four-corner XY snapshots, spring return, routable axes and Audio pilot.
+  Flame instrument is a ready-to-play four-corner look.
+- Add Additive, Screen, Difference and spectrum-driven deck blends, plus global
+  pulse shaping after the complete effect stack.
+- Add Spectral City, Cymatics and Stereo Orbit with 12 new scene controls.
+- Record, save and replay resolved performances; export silent 30 fps H.264
+  artwork in a hidden worker while the live window continues.
+- Verify 168 workspace tests, all 42 scenes and pixel-identical take replay at
+  20/60/144 fps. See docs/INSTRUMENT_0.17.0.md for details and receipts.
+
+## [0.16.0] - 2026-10-12
+
+- Add two independent visual decks, manual/routed crossfade, beat-length fades
+  and continuous Take B handoffs that preserve feedback and spectrum history.
+- Add five momentary pads with smooth release, music routing and keys 1-5.
+- Add sub-bass, kick onset, band transients, stereo balance and tonal/noisy
+  character. Route 18 audio sources to parameters, effects, pads and framing.
+- Give Beat flash source, strength, threshold, decay and maximum rate controls.
+- Add reusable effect racks, constrained mutation with locks and visual Undo,
+  and ordered setlists with per-cue hold/fade beats and automatic/manual advance.
+- Defer settings writes during animated fades. No sound/IPC format changes.
+- Validation: 156 workspace tests; 39 production scene renders and dual-deck
+  pixel checks; 46 offscreen previews; 480 captured-music performance frames,
+  three deck handoffs and all five pads. See docs/PERFORMANCE_0.16.0.md.
+
+
+## [0.15.0] - 2026-10-12
+
+- Route ten musical signals to visual parameters with depth, smoothing, direction
+  and live values. Add Intensity with individual parameter ranges.
+- Save complete looks including signal mappings, palette and scene variations.
+  Add Molten metal, Electric ink, Solar surface, Bioluminescence, Pulse passage,
+  Stereo sculpture and Ridge flight factory looks.
+- Add four Flame variations and eight extra Flame / Stereo sculpture controls.
+  Separate Tunnel's bass travel, midrange shape and high-frequency sparks.
+  Give Terrain a camera-height control and correct its mountain horizon.
+- Add Audition: capture eight seconds of analysis, replay the same visual phrase
+  across scenes and looks, and record Keeper / Needs work / Boring ratings.
+  Audio continues live; the capture is bounded and stays in memory.
+- Validation: 147 workspace tests passed, one optional test skipped; 39 scene
+  renders, parameter / palette / variation checks, 42 UI previews and a 12-look
+  gauntlet using the captured music all passed. Workspace-wide formatting has
+  existing differences outside this change; no broad formatting rewrite applied.
+
+## [0.14.1] - 2026-10-12
+
+- Add a one-pixel contrasting outline to text in both themes, including colored
+  warnings, labels, menus, tooltips, and canvas captions over translucent panels.
+  Preserve text colors, layout, clipping, and disabled opacity.
+- Give minimize, maximize/restore, and close buttons thin rounded borders that
+  brighten to white on hover.
+- Validation: 94 GUI tests passed (one optional capture test skipped), 33 GPU
+  previews rendered, and the installed GUI was captured with the new outlines.
+
+## [0.14.0] - 2026-10-12
+
+- F11 enters fullscreen presentation with application chrome hidden. Escape
+  or F11 restores the previous window state. Arrow keys and transient Previous /
+  Next controls switch scenes during presentation. Remove the redundant Full button.
+- Rework Tunnel around spectrum contours, waveform detail, transient expansion,
+  depth ribs, and feedback trails. Terrain uses a broader frequency domain,
+  refined surface intersections, smooth mountains, and a shaded wireframe.
+- Matrix rain gets stable column motion, explicit fading tails, frequency-driven
+  brightness, and localized beat bursts instead of a whole-screen color lift.
+- Add standalone Stereo scope and Spectrogram scenes to the shared effect stack.
+- Expose 24 scene controls across Tunnel, Terrain, Matrix, Flame, Stereo scope,
+  and Spectrogram, plus six independent audio driver gains. Saved looks and
+  visual undo retain these settings. Flame's default rendering is preserved.
+- Add a live-music gauntlet with repeatable analyzer replay, videos, clean / EQ /
+  effect-stack screenshots, GPU timings, and matched-clock silence comparisons.
+- Validation: 141 workspace tests passed (one opt-in capture test skipped),
+  39 scenes rendered, all 24 scene controls changed rendered output, and stereo
+  orientation, effect ordering, transitions, timing, and clipping checks passed.
+  Installed-GUI checks passed for F11, Escape, scene navigation, window restore,
+  and preservation of preferences and sound controls.
+
 ## [0.13.0] - 2026-10-11
 
 - Start in the system tray at Windows sign-in. The normal-user task waits ten

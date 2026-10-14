@@ -41,7 +41,8 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
         "Solar tide",
         "Phosphor",
         "Night drive",
-        "Still water",
+        "Still water", "Molten metal", "Electric ink", "Solar surface", "Bioluminescence",
+        "Pulse passage", "Stereo sculpture", "Ridge flight", "Flame instrument", "Afterhours district", "Resonant gold", "Binary stars",
     ] {
         scenarios.push((name, 1280, 720, false, true, viz_panel::Page::Style));
     }
@@ -66,6 +67,30 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
     scenarios.push(("recovery-empty", 760, 460, true, true, viz_panel::Page::Scenes));
     scenarios.push(("effects-off", 1000, 460, false, true, viz_panel::Page::Effects));
     scenarios.push(("effects-paper", 1100, 700, true, true, viz_panel::Page::Effects));
+    scenarios.push(("controls-tunnel", 1000, 620, false, true, viz_panel::Page::Style));
+    scenarios.push(("controls-gl_flame", 1000, 620, false, true, viz_panel::Page::Style));
+    scenarios.push(("controls-gl_terrain", 1000, 460, false, true, viz_panel::Page::Style));
+    scenarios.push(("controls-stereo_scope", 1000, 620, false, true, viz_panel::Page::Style));
+    for (name, light) in [("chrome-dark", false), ("chrome-light", true), ("chrome-hover-dark", false), ("chrome-hover-light", true)] {
+        scenarios.push((name, 1000, 620, light, false, viz_panel::Page::Style));
+    }
+    scenarios.push(("audition", 1100, 800, false, true, viz_panel::Page::Audition));
+    scenarios.push(("audition-light", 1000, 620, true, true, viz_panel::Page::Audition));
+    scenarios.push(("perform", 1280, 900, false, true, viz_panel::Page::Perform));
+    scenarios.push(("perform-compact", 1000, 460, false, true, viz_panel::Page::Perform));
+    scenarios.push(("perform-light", 1000, 620, true, true, viz_panel::Page::Perform));
+    scenarios.push(("signals", 1100, 900, false, true, viz_panel::Page::Signals));
+    for (name,page) in [("patch",viz_panel::Page::Patch),("xy",viz_panel::Page::Xy),("record",viz_panel::Page::Record)] {
+        scenarios.push((name,1100,900,false,true,page));
+        scenarios.push((match name{"patch"=>"patch-compact","xy"=>"xy-compact",_=>"record-compact"},1000,460,false,true,page));
+        scenarios.push((match name{"patch"=>"patch-light","xy"=>"xy-light",_=>"record-light"},1000,700,true,true,page));
+    }
+    for name in ["controls-spectral_city","controls-cymatics","controls-stereo_orbit"]{scenarios.push((name,1100,800,false,true,viz_panel::Page::Style));}
+    for (name,page) in [("adaptive",viz_panel::Page::Signals),("distortion",viz_panel::Page::Perform)] {
+        scenarios.push((name,1100,980,false,true,page));
+        scenarios.push((if name=="adaptive" {"adaptive-compact"} else {"distortion-compact"},1000,520,false,true,page));
+        scenarios.push((if name=="adaptive" {"adaptive-light"} else {"distortion-light"},1100,800,true,true,page));
+    }
     for (name, w, h, light, stage_view, page) in scenarios {
         let presenting = name == "presentation";
         let editing = name.starts_with("eq-");
@@ -90,6 +115,17 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
         if name == "quality-half" { visual.quality = viz_settings::Quality::Low; }
         visual.favorites = vec!["gl_warp".into(), "particles".into(), "gl_ocean".into()];
         let mut mode = show::ShowMode::GlWarp;
+        if name.starts_with("patch") || name.starts_with("xy") {
+            visual.motion.routes.insert("zoom".into(),crate::viz_motion::Route{source:crate::viz_motion::Source::Bass,secondary:crate::viz_motion::Source::Beat,..Default::default()});
+            visual.xy.enabled=true;visual.xy.scene=mode.as_str().into();visual.xy.corners=std::array::from_fn(|i|Some(crate::viz_xy::Xy::capture(mode,&visual,format!("Corner {}",i+1))));
+        }
+        if name.starts_with("perform") {
+            visual.performance.enabled=true;visual.performance.crossfade=0.35;
+            visual.performance.deck_b=crate::viz_looks::factory().into_iter().find(|l| l.name=="Solar tide");
+        }
+        if name.starts_with("adaptive") {visual.signal_response=crate::viz_signals::Settings::preset(0.025,0.18);}
+        if name.starts_with("distortion") {crate::performance_panel::interaction_recipe(0,&mut mode,&mut visual);}
+        if let Some(id) = name.strip_prefix("controls-") { mode = show::ShowMode::from_str(id); }
         if let Some(look) = crate::viz_looks::factory()
             .into_iter()
             .find(|l| l.name == name)
@@ -159,6 +195,7 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
                     egui::vec2(w as f32, h as f32),
                 )),
                 time: Some(frame as f64 / 60.),
+                events: if name.starts_with("chrome-hover") { vec![egui::Event::PointerMoved(egui::pos2(w as f32 - 89., 15.))] } else { vec![] },
                 ..Default::default()
             };
             let output = ctx.run(raw, |ctx| {
@@ -195,6 +232,9 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
                                 }
                             });
                             ui.separator();
+                            if name.starts_with("chrome") {
+                                ui.colored_label(egui::Color32::from_rgb(255, 170, 90), "Bypass is ON. Disable it in the toolbar to hear changes.");
+                            }
                             if editing {
                                 sound_editor.controls(ui);
                                 ui.horizontal(|ui| { for tab in ["EQ", "Dynamics", "A/V sync"] { let _ = ui.selectable_label(tab == "EQ", tab); } });
@@ -218,7 +258,10 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
                     loudness: &[],
                     spectro_tex: None,
                 };
-                let (fx_order, fx_mix, fx_count) = visual.effect_uniforms();
+                let mut bus = crate::vizbus::VizBus::new();
+                bus.bass=0.55; bus.mid=0.4; bus.treble=0.3; bus.pulse=0.5; bus.width=0.6; bus.loud_db=-16.0;
+                let resolved = browser.motion.resolve(&visual, mode.as_str(), &bus, 1.0/60.0);
+                let (fx_order, fx_mix, fx_count) = (resolved.order, resolved.mixes, resolved.count);
                 let mut uniforms = glstage::Uniforms {
                     fx_order,
                     fx_mix,
@@ -226,8 +269,14 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
                     draw_editor: !stage_view && !presenting,
                     draw_overlays: !stage_view && !presenting,
                     rainbow: visual.rainbow,
-                    speed: visual.speed,
-                    brightness: visual.brightness,
+                    speed: resolved.speed,
+                    brightness: resolved.brightness,
+                    hue: resolved.hue, saturation: resolved.saturation,
+                    controls: resolved.controls, details: resolved.details,
+                    variant: visual.scene_variants.get(mode.as_str()).copied().unwrap_or(0),
+                    accent: visual.accent.unwrap_or([0.0,0.88,1.0]),
+                    loud: 0.7, width: 0.6,
+                    stereo: std::array::from_fn(|i| [(i as f32*0.13).sin()*0.2,(i as f32*0.13+0.7).sin()*0.2]),
                     render_scale: visual.quality.scale(),
                     transition_seconds: visual.transition_seconds,
                     bass: 0.55,
@@ -239,15 +288,21 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
                 uniforms.spec.copy_from_slice(&spec);
                 uniforms.wave.copy_from_slice(&wave);
                 for v in &mut uniforms.spec {
-                    *v = (*v * visual.energy).min(1.0);
+                    *v = (*v * resolved.energy).min(1.0);
                 }
                 for v in &mut uniforms.wave {
-                    *v = (*v * visual.energy).clamp(-1.0, 1.0);
+                    *v = (*v * resolved.energy).clamp(-1.0, 1.0);
                 }
                 uniforms.bass *= visual.energy;
                 uniforms.mid *= visual.energy;
                 uniforms.treble *= visual.energy;
                 uniforms.pulse *= visual.energy;
+                if let Some(look)=&visual.performance.deck_b {
+                    let mut config=viz_settings::VizSettings::default();let mut b_mode=show::ShowMode::Off;look.apply(&mut b_mode,&mut config);
+                    let mut frame=crate::audio_analysis::Analyzer::new(48_000,2).snapshot();frame.bus=bus.clone();frame.spectrum.copy_from_slice(&spec);frame.wave=wave.clone();
+                    let b=crate::viz_performance::uniforms(&config,b_mode,&frame,&mut browser.performance.motion_b,&mut browser.performance.flash_b,1.0/60.0,0);
+                    stage.lock().unwrap().set_deck_b(Some((b,visual.performance.crossfade)));
+                }
                 scene.mode = mode;
                 let panel = egui::CentralPanel::default();
                 let panel = if presenting {
@@ -269,6 +324,7 @@ pub unsafe fn render(gl: Arc<glow::Context>) -> Result<(), String> {
                     );
                 });
                 if presenting { presentation.controls(ctx, mode.label()); }
+                if name.starts_with("chrome") { crate::window_chrome::caption_overlay(ctx); }
                 viz_panel::gallery(ctx, &mut mode, &mut visual, &mut browser);
                 if name.starts_with("recovery") {
                     let problem = crate::state_writer::Problem { version: Some(3), message: "The sound state has an unfinished write (version 3).".into() };

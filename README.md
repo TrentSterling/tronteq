@@ -8,6 +8,21 @@ No VB-Cable. No Equalizer APO. No drivers. Our code, our install, our stack.
 
 POC. See `CLAUDE.md` for architecture and `CHANGELOG.md` for what shipped.
 
+The local 0.16.0 visualizer includes musical parameter routing, Intensity ranges,
+12 complete factory looks, Flame variations and Stereo sculpture. Under VIZ,
+Style exposes scene controls. Perform adds a two-deck mixer, pads, mutation and
+a beat-based setlist. Effects holds reusable racks and flash controls. More >
+Signals exposes 18 signal sources; More > Audition captures an eight-second visual phrase
+for repeatable comparisons. Sound remains live during visual replay.
+
+Replay the captured-music look gauntlet with:
+
+```powershell
+target/release/tronteq-audit-probe.exe --live-gauntlet --looks --replay target/gauntlet-final/analysis.json --out target/gauntlet-looks-0.15-final
+```
+
+The HTML report contains clean, EQ and effect-stack views, videos and timings.
+
 ## Components
 
 - **`apo/TrontEqApo.dll`** (C++ COM) — the real-time processor, loaded by `audiodg.exe`

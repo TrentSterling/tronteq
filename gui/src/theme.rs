@@ -682,6 +682,7 @@ pub fn hsv(h: f32, s: f32, v: f32) -> Color32 {
 }
 
 pub fn apply(ctx: &egui::Context) {
+    ctx.add_plugin(TextOutline);
     // Embed Rajdhani (techy squarish HUD face) as the default UI font so the app
     // reads like product UI, not a debug panel. SemiBold powers headings/wordmark.
     let mut fonts = egui::FontDefinitions::default();
@@ -735,6 +736,63 @@ pub fn apply(ctx: &egui::Context) {
     style.interaction.selectable_labels = false;
     style.visuals.clip_rect_margin = 0.0;
     ctx.set_style(style);
+}
+
+/// A one-physical-pixel contrasting edge keeps text readable over
+/// the translucent gradient. Work on the final shapes so every text widget,
+/// tooltip and canvas caption gets the same treatment without changing layout.
+struct TextOutline;
+
+impl egui::Plugin for TextOutline {
+    fn debug_name(&self) -> &'static str { "Text outline" }
+
+    fn output_hook(&mut self, output: &mut egui::FullOutput) {
+        let pixel = output.pixels_per_point.recip();
+        for clipped in &mut output.shapes {
+            outline_text(&mut clipped.shape, pixel);
+        }
+    }
+}
+
+fn outline_text(shape: &mut egui::Shape, pixel: f32) {
+    match shape {
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes { outline_text(shape, pixel); }
+        }
+        egui::Shape::Text(text) if !text.galley.is_empty() && text.opacity_factor > 0.0 => {
+            let mut edge = text.clone();
+            edge.underline = Stroke::NONE;
+            edge.override_text_color = None;
+            let galley = std::sync::Arc::make_mut(&mut edge.galley);
+            for row in &mut galley.rows {
+                let visuals = &mut std::sync::Arc::make_mut(&mut row.row).visuals;
+                let glyphs = visuals.glyph_vertex_range.clone();
+                // Copy glyphs only: a text selection or RichText background
+                // must stay behind the outline, not become eight extra boxes.
+                visuals.mesh.indices = visuals.mesh.indices.chunks_exact(3)
+                    .filter(|tri| tri.iter().all(|i| glyphs.contains(&(*i as usize))))
+                    .flatten().copied().collect();
+                for vertex in &mut visuals.mesh.vertices[glyphs] {
+                    let fill = text.override_text_color.unwrap_or_else(|| {
+                        if vertex.color == Color32::PLACEHOLDER { text.fallback_color } else { vertex.color }
+                    });
+                    let [r, g, b, a] = fill.to_srgba_unmultiplied();
+                    let bright = (r as u32 * 3 + g as u32 * 6 + b as u32) > 1280;
+                    let rgb = if bright { [12, 17, 26] } else { [250, 253, 255] };
+                    vertex.color = Color32::from_rgba_unmultiplied(rgb[0], rgb[1], rgb[2], a);
+                }
+            }
+            let mut shapes = Vec::with_capacity(9);
+            for (x, y) in [(-1., -1.), (0., -1.), (1., -1.), (-1., 0.), (1., 0.), (-1., 1.), (0., 1.), (1., 1.)] {
+                let mut stroke = edge.clone();
+                stroke.pos += egui::vec2(x * pixel, y * pixel);
+                shapes.push(egui::Shape::Text(stroke));
+            }
+            shapes.push(egui::Shape::Text(text.clone()));
+            *shape = egui::Shape::Vec(shapes);
+        }
+        _ => {}
+    }
 }
 
 /// egui Visuals derived entirely from the current palette.

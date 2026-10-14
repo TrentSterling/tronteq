@@ -14,10 +14,22 @@ pub enum Page {
     Style,
     Effects,
     Meters,
+    Audition,
+    Perform,
+    Signals,
+    Patch,
+    Xy,
+    Record,
 }
 
 #[derive(Default)]
 pub struct Browser {
+    pub patch:crate::patch_bay::Panel,
+    pub recorder:crate::viz_record::Recorder,
+    pub performance: crate::viz_performance::Runtime,
+    pub motion: crate::viz_motion::Runtime,
+    pub motion_epoch: u64,
+    pub audition: crate::viz_audition::Audition,
     pub search: String,
     pub category: String,
     pub favorites_only: bool,
@@ -67,20 +79,11 @@ pub fn show(
         ui.selectable_value(&mut config.stage_view, true, "Stage view")
             .on_hover_text("A clear stage for the visuals. EQ continues processing.");
         if ui
-            .small_button("Full")
-            .on_hover_text("Toggle fullscreen (F11)")
-            .clicked()
-        {
-            let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
-        }
-        if ui
             .add_enabled(
                 *mode != ShowMode::Off && available,
                 egui::Button::new("Present").small(),
             )
-            .on_hover_text("Fullscreen artwork with controls hidden. Escape returns here.")
+            .on_hover_text("Fullscreen artwork (F11). Controls hide when idle; Escape returns here.")
             .clicked()
         {
             browser.present_requested = true;
@@ -93,15 +96,23 @@ pub fn show(
         );
     }
     ui.separator();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().button_padding.x = 4.0;
+        ui.spacing_mut().item_spacing.x = 2.0;
         for (page, label) in [
             (Page::Scenes, "Scenes"),
             (Page::Style, "Style"),
             (Page::Effects, "Effects"),
             (Page::Meters, "Meters"),
+            (Page::Perform, "Perform"),
         ] {
             ui.selectable_value(&mut browser.page, page, label);
         }
+        ui.menu_button(match browser.page { Page::Audition => "Audition", Page::Signals => "Signals", Page::Patch=>"Patch bay", Page::Xy=>"XY pad",Page::Record=>"Record",_ => "More" },|ui| {
+            if ui.selectable_label(browser.page==Page::Audition,"Audition").clicked(){browser.page=Page::Audition;ui.close();}
+            if ui.selectable_label(browser.page==Page::Signals,"Signals").clicked(){browser.page=Page::Signals;ui.close();}
+            for (page,label) in [(Page::Patch,"Patch bay"),(Page::Xy,"XY pad"),(Page::Record,"Record")]{if ui.selectable_label(browser.page==page,label).clicked(){browser.page=page;ui.close();}}
+        });
     });
     ui.spacing_mut().item_spacing.y = row_spacing;
     ui.add_space(2.0);
@@ -138,7 +149,21 @@ fn contents(
     layers: &mut Layers,
     shuffle: &mut bool,
 ) {
-    if browser.page == Page::Scenes {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    if browser.page == Page::Patch {
+        browser.patch.show(ui,*mode,config,&browser.motion);
+    } else if browser.page == Page::Xy {
+        crate::viz_xy::panel(ui,*mode,config,&mut browser.motion.xy);
+    } else if browser.page == Page::Record {
+        browser.recorder.panel(ui);
+    } else if browser.page == Page::Perform {
+        ui.horizontal_wrapped(|ui|{for (page,label) in [(Page::Patch,"Patch bay"),(Page::Xy,"XY pad"),(Page::Record,"Record")]{if ui.small_button(label).clicked(){browser.page=page;}}});
+        crate::performance_panel::show(ui,mode,config,&mut browser.performance,&mut browser.motion,shuffle);
+    } else if browser.page == Page::Signals {
+        crate::performance_panel::signals(ui,config,&mut browser.motion);
+    } else if browser.page == Page::Audition {
+        crate::viz_audition::panel(ui, mode, config, &mut browser.audition, &mut browser.selected_look, shuffle);
+    } else if browser.page == Page::Scenes {
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 24.0),
             egui::Layout::right_to_left(egui::Align::Center),
@@ -216,6 +241,8 @@ fn contents(
     } else if browser.page == Page::Style {
         looks(ui, mode, config, browser);
         ui.separator();
+        ui.add(egui::Slider::new(&mut config.motion.intensity, 0.0..=1.0).text("Intensity").custom_formatter(|v, _| format!("{:.0}%", v*100.0)));
+        ui.small("Use React to... under a slider to map audio or Intensity.");
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("FEEL").strong());
             if ui.small_button("Reset feel").clicked() {
@@ -229,16 +256,77 @@ fn contents(
                 .text("Speed")
                 .suffix("x"),
         );
+        crate::viz_motion::binding(ui, "speed", config.speed, &mut config.motion, &browser.motion);
         ui.add(
             egui::Slider::new(&mut config.energy, 0.0..=2.0)
                 .text("Audio response")
                 .suffix("x"),
         );
+        crate::viz_motion::binding(ui, "energy", config.energy, &mut config.motion, &browser.motion);
         ui.add(egui::Slider::new(&mut config.brightness, 0.1..=1.5).text("Brightness"));
+        crate::viz_motion::binding(ui, "brightness", config.brightness, &mut config.motion, &browser.motion);
         ui.horizontal(|ui| {
             ui.label("Color");
             ui.selectable_value(&mut config.rainbow, true, "Spectrum");
             ui.selectable_value(&mut config.rainbow, false, "Theme");
+        });
+        egui::CollapsingHeader::new("Palette").show(ui, |ui| {
+            let c = theme::viz_accent();
+            let mut accent = config.accent.unwrap_or([c.r() as f32/255.0,c.g() as f32/255.0,c.b() as f32/255.0]);
+            ui.horizontal(|ui| {
+                ui.label("Art color");
+                if ui.color_edit_button_rgb(&mut accent).changed() { config.accent = Some(accent); }
+                if ui.small_button("Use theme").clicked() { config.accent = None; }
+            });
+            ui.add(egui::Slider::new(&mut config.hue, 0.0..=1.0).text("Color shift"));
+            crate::viz_motion::binding(ui, "hue", config.hue, &mut config.motion, &browser.motion);
+            ui.add(egui::Slider::new(&mut config.saturation, 0.0..=2.0).text("Saturation"));
+            crate::viz_motion::binding(ui, "saturation", config.saturation, &mut config.motion, &browser.motion);
+        });
+        if *mode == ShowMode::GlFlame || *mode == ShowMode::StereoScope {
+            let variants: &[&str] = if *mode == ShowMode::GlFlame { &["Original", "Molten metal", "Electric ink", "Solar surface", "Bioluminescence"] } else { &["Meter", "Stereo sculpture"] };
+            let mut variant = config.scene_variants.get(mode.as_str()).copied().unwrap_or(0).min(variants.len() as u32 - 1);
+            egui::ComboBox::from_id_salt("scene-variation").selected_text(variants[variant as usize]).show_ui(ui, |ui| {
+                for (i, label) in variants.iter().enumerate() { ui.selectable_value(&mut variant, i as u32, *label); }
+            });
+            if variant != 0 { config.scene_variants.insert(mode.as_str().into(), variant); } else { config.scene_variants.remove(mode.as_str()); }
+        }
+        if let Some(labels) = scene_control_labels(*mode) {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("{} controls", mode.label())).strong());
+                if ui.small_button("Reset scene").clicked() {
+                    config.scene_controls.remove(mode.as_str());
+                }
+            });
+            let mut values = config.scene_controls.get(mode.as_str()).copied().unwrap_or([1.0; 4]);
+            let mut changed = false;
+            for (i, (value, label)) in values.iter_mut().zip(labels).enumerate() {
+                changed |= ui.add(egui::Slider::new(value, 0.0..=2.0).text(label)).changed();
+                crate::viz_motion::binding(ui, &crate::viz_motion::scene_key(mode.as_str(), i), *value, &mut config.motion, &browser.motion);
+            }
+            if changed { config.scene_controls.insert(mode.as_str().into(), values); }
+        }
+        if *mode == ShowMode::GlFlame || *mode == ShowMode::StereoScope {
+            egui::CollapsingHeader::new("Sculpt the scene").show(ui, |ui| {
+                let labels = if *mode == ShowMode::GlFlame { ["Curl scale", "Filament width", "Color spread", "Source height"] } else { ["Ribbon depth", "Orbit", "Ribbon glow", "Twist"] };
+                let mut values = config.scene_details.get(mode.as_str()).copied().unwrap_or([1.0; 4]);
+                let mut changed = false;
+                for (i, (value, label)) in values.iter_mut().zip(labels).enumerate() {
+                    changed |= ui.add(egui::Slider::new(value, 0.0..=2.0).text(label)).changed();
+                    crate::viz_motion::binding(ui, &crate::viz_motion::detail_key(mode.as_str(), i), *value, &mut config.motion, &browser.motion);
+                }
+                if changed { config.scene_details.insert(mode.as_str().into(), values); }
+            });
+        }
+        egui::CollapsingHeader::new("Audio drivers").show(ui, |ui| {
+            if ui.small_button("Reset drivers").clicked() { config.signal_gains = [1.0; 6]; }
+            for (gain, label) in config.signal_gains.iter_mut().zip([
+                "Bass", "Mids", "Treble", "Beat punch", "Spectral change", "Stereo width",
+            ]) {
+                ui.add(egui::Slider::new(gain, 0.0..=2.0).text(label).suffix("x"));
+            }
+            ui.label(egui::RichText::new("Shape the scene and its effects independently of your sound.").small().color(theme::muted()));
         });
         let playback = egui::CollapsingHeader::new("Playback & quality")
             .open(Some(browser.playback_expanded)).show(ui, |ui| {
@@ -266,6 +354,8 @@ fn contents(
             browser.playback_expanded = !browser.playback_expanded;
         }
     } else if browser.page == Page::Effects {
+        crate::performance_panel::racks(ui,config,&mut browser.performance);
+        crate::viz_compositor::panel(ui,&mut config.pulse_control);
         ui.horizontal(|ui| {
             ui.checkbox(&mut config.effects_enabled, "Enable effects")
                 .on_hover_text("Compare this scene with and without the full effect stack. Keeps every effect and mix setting.");
@@ -360,6 +450,7 @@ fn contents(
                                 .map(|value| value / 100.0)
                         }),
                 );
+                crate::viz_motion::binding(ui, &crate::viz_motion::effect_key(slot.effect.bit()), slot.mix, &mut config.motion, &browser.motion);
             });
         }
         if let Some(i) = move_up {
@@ -371,6 +462,7 @@ fn contents(
         if let Some(i) = remove {
             config.effects.remove(i);
         }
+        crate::performance_panel::flash(ui,config,&browser.motion);
     } else {
         ui.label(egui::RichText::new("Analyzer overlays").strong());
         if config.stage_view {
@@ -385,6 +477,24 @@ fn contents(
             ui.checkbox(&mut layers.goniometer, "Stereo scope");
             ui.checkbox(&mut layers.loudness, "Level history");
         });
+    }
+}
+
+pub fn scene_control_labels(mode: ShowMode) -> Option<[&'static str; 4]> {
+    match mode {
+        ShowMode::GlKaleido => Some(["Mirror sectors", "Pattern scale", "Line glow", "Persistence"]),
+        ShowMode::GlCopper => Some(["Ribbon count", "Thickness", "Wave bend", "Persistence"]),
+        ShowMode::GlLaser => Some(["Fan spread", "Beam width", "Haze", "Persistence"]),
+        ShowMode::Tunnel => Some(["Ring density", "Spectrum shape", "Twist", "Trail length"]),
+        ShowMode::GlTerrain => Some(["Mountain height", "Grid density", "Horizon glow", "Camera height"]),
+        ShowMode::GlMatrix => Some(["Glyph size", "Rain density", "Fall speed", "Trail length"]),
+        ShowMode::GlFlame => Some(["Turbulence", "Lift", "Embers", "Heat sustain"]),
+        ShowMode::StereoScope => Some(["Scope gain", "Point size", "Grid brightness", "Persistence"]),
+        ShowMode::SpectralCity => Some(["Tower height", "Block width", "Window glow", "Camera height"]),
+        ShowMode::Cymatics => Some(["Harmonic complexity", "Line sharpness", "Grain", "Drift"]),
+        ShowMode::StereoOrbit => Some(["Orbit radius", "Wave gain", "Orbit tilt", "Persistence"]),
+        ShowMode::Spectrogram => Some(["Contrast", "Intensity", "Frequency color", "Grid brightness"]),
+        _ => None,
     }
 }
 
@@ -596,6 +706,28 @@ mod tests {
             )
     }
     #[test]
+    fn adaptive_presets_and_distortion_recipe_are_usable_and_undoable() {
+        let mut h=harness((ShowMode::GlWarp,VizSettings::default(),Browser{page:Page::Signals,..Default::default()},Layers::default(),false));
+        h.get_by_label("Percussive").click();h.run();
+        assert!(h.state().1.signal_response.enabled);
+        assert_eq!(h.state().1.signal_response.channels[1].attack,0.0);
+        assert!(h.get_by_label("Adaptive response").rect().right()<=310.0);
+        h.get_by_label("Undo").click();h.run();
+        assert!(!h.state().1.signal_response.enabled);
+        h.state_mut().2.page=Page::Perform;h.run();
+        h.get_by_label("Cross-deck distortion").scroll_to_me();h.run();
+        h.get_by_label("Cross-deck distortion").click();h.run();
+        h.get_by_label("Flame flow").scroll_to_me();h.run();
+        h.get_by_label("Flame flow").click();h.run();
+        assert!(h.state().0==ShowMode::GlTerrain);
+        assert!(h.state().1.performance.enabled);
+        assert_eq!(h.state().1.performance.interaction.mode,crate::viz_compositor::InteractionMode::Flow);
+        h.get_by_label("Undo").click();h.run();
+        assert!(h.state().0==ShowMode::GlWarp);
+        assert!(!h.state().1.performance.enabled);
+        assert_eq!(h.state().1.performance.interaction.mode,crate::viz_compositor::InteractionMode::Off);
+    }
+    #[test]
     fn resolution_control_preserves_scene_and_style() {
         let state = (
             ShowMode::GlFlame,
@@ -674,7 +806,7 @@ mod tests {
             false,
         ));
         for label in [
-            "Off", "Next", "Bars XL", "Scenes", "Style", "Effects", "Meters",
+            "Off", "Next", "Bars XL", "Scenes", "Style", "Effects", "Meters", "Perform", "More",
         ] {
             let rect = h.get_by_label(label).rect();
             assert!(
@@ -682,6 +814,44 @@ mod tests {
                 "{label} escapes panel: {rect:?}"
             );
         }
+    }
+    #[test]
+    fn more_menu_reaches_signals_and_performance_controls_fit() {
+        let mut h=harness((ShowMode::GlFlame,VizSettings::default(),Browser::default(),Layers::default(),false));
+        h.get_by_label("More").click();h.run();h.get_by_label("Signals").click();h.run();assert!(h.query_by_label("Signal lab").is_some());
+        h.get_by_label("Perform").click();h.run();
+        for label in ["1 Punch","2 Scatter","3 Freeze","4 Sweep","5 Color burst","Enable deck B","Fade to A","Fade to B"] {
+            let r=h.get_by_label(label).rect();assert!(r.left()>=0.0&&r.right()<=310.0,"{label} escapes panel: {r:?}");
+        }
+    }
+    #[test]
+    fn performance_links_connect_a_route_seed_xy_and_start_recording() {
+        let mut h=harness((ShowMode::GlFlame,VizSettings::default(),Browser{page:Page::Perform,..Default::default()},Layers::default(),false));
+        h.get_by_label("Patch bay").click();h.run();h.get_by_label("Connect signal").click();h.run();
+        assert!(h.state().1.motion.routes.contains_key("zoom"));
+        h.get_by_label("Gate").scroll_to_me();h.run();h.get_by_label("Gate").click();h.run();assert_eq!(h.state().1.motion.routes["zoom"].curve,[0.0,0.0,0.0,0.9,1.0]);
+        h.get_by_label("Perform").click();h.run();h.get_by_label("XY pad").click();h.run();
+        h.get_by_label("Seed four corners from current look").click();h.run();assert!(h.state().1.xy.enabled);assert!(h.state().1.xy.corners.iter().all(Option::is_some));
+        h.get_by_label("Audio pilot").click();h.run();assert!(h.state().1.motion.routes.contains_key("xy_x"));
+        h.get_by_label("Manual XY").click();h.run();assert!(!h.state().1.motion.routes.contains_key("xy_x"));
+        h.get_by_label("Perform").click();h.run();h.get_by_label("Record").click();h.run();
+        h.get_by_label("Record new take").click();h.run();assert!(h.state().2.recorder.recording);
+        h.get_by_label("Stop").click();h.run();assert!(!h.state().2.recorder.recording);
+    }
+    #[test]
+    fn audition_capture_and_ratings_fit_the_compact_panel() {
+        let mut h = harness((ShowMode::GlFlame, VizSettings::default(), Browser {
+            page: Page::Audition, ..Default::default()
+        }, Layers::default(), true));
+        for label in ["Audition", "Record 8-second phrase", "Keeper", "Needs work", "Boring"] {
+            assert!(h.get_by_label(label).rect().right() <= 310.0, "{label} escapes");
+        }
+        h.get_by_label("Keeper").click(); h.run();
+        assert_eq!(h.state().1.review_ratings.len(), 1);
+        h.get_by_label("Record 8-second phrase").click(); h.run();
+        assert!(!h.state().4);
+        h.get_by_label("Cancel recording").click(); h.run();
+        assert!(h.query_by_label("Record 8-second phrase").is_some());
     }
     #[test]
     fn stage_toggle_preserves_analyzer_preferences() {

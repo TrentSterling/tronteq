@@ -37,6 +37,13 @@ mod tests {
         assert!((bus.loud_db + 20.0).abs() < 0.001);
         assert_eq!(bus.hist[Signal::Loud as usize].len(), 240);
     }
+    #[test]
+    fn sub_and_kick_ranges_have_separate_onsets() {
+        let mut bus=VizBus::new();let mut bars=[0.0;64];bars[..10].fill(0.7);bus.step(&bars,&[],0.1,0.2);
+        assert!((bus.sub_bass-0.7).abs()<0.001);assert_eq!(bus.kick,0.0);
+        bars.fill(0.0);bars[10..21].fill(0.5);bus.step(&bars,&[],0.1,0.2);assert!(bus.kick>0.5);assert!(bus.band_onsets[0]>0.0);
+        let kick=bus.kick;bus.step(&bars,&[],0.1,0.2);assert!(bus.kick<kick);assert_eq!(bus.band_onsets[0],0.0);
+    }
 }
 
 impl Default for History {
@@ -100,6 +107,11 @@ pub struct VizBus {
     pub crest_db: f32,
     pub corr: f32,
     pub width: f32,
+    pub sub_bass: f32,
+    pub kick: f32,
+    pub band_onsets: [f32; 3],
+    pub balance: f32,
+    pub tonality: f32,
 
     pub hist: Vec<History>, // Signal::Count entries, allocated once
 
@@ -130,6 +142,7 @@ impl VizBus {
             crest_db: 0.0,
             corr: 0.0,
             width: 0.0,
+            sub_bass: 0.0, kick: 0.0, band_onsets: [0.0; 3], balance: 0.0, tonality: 0.0,
             hist: vec![History::default(); Signal::Count as usize],
             prev_spectrum: Vec::new(),
             onset: [0.0; ONSET],
@@ -162,6 +175,13 @@ impl VizBus {
         self.bass = mean(&spectrum[..q]);
         self.mid = mean(&spectrum[q..(n - q)]);
         self.treble = mean(&spectrum[(n - q)..]);
+        self.sub_bass = mean(&spectrum[..(n * 10 / 64).max(1)]);
+        let onset_band = |lo: usize, hi: usize| -> f32 {
+            if self.prev_spectrum.len() != n { return 0.0; }
+            (spectrum[lo..hi].iter().zip(&self.prev_spectrum[lo..hi]).map(|(v,p)| (v-p).max(0.0)).sum::<f32>() / (hi-lo).max(1) as f32 * 10.0).clamp(0.0,1.0)
+        };
+        self.kick = (self.kick * 0.8).max(onset_band(n*10/64, n*21/64));
+        self.band_onsets = [onset_band(0,q), onset_band(q,n-q), onset_band(n-q,n)];
 
         // Spectral centroid (0..1 across the log axis) + flux (onset strength).
         let sum: f32 = spectrum.iter().sum::<f32>().max(1e-6);
@@ -233,6 +253,9 @@ impl VizBus {
             let vr = (srr / k - (sr / k) * (sr / k)).max(1e-9);
             self.corr = (cov / (vl * vr).sqrt()).clamp(-1.0, 1.0);
             self.width = (s_e / m_e.max(1e-9)).sqrt().min(2.0);
+            self.balance = ((srr.sqrt()-sll.sqrt())/(srr.sqrt()+sll.sqrt()).max(1e-9)).clamp(-1.0,1.0);
+        } else {
+            self.balance = 0.0;
         }
 
         // Publish histories (normalized 0..1 where the natural range isn't).

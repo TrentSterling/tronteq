@@ -50,4 +50,9 @@ impl RenderTimer {
             }
         }
     }
+    pub fn destroy(self, gl: &glow::Context) {
+        for (query, _) in self.queries {
+            unsafe { gl.delete_query(query); }
+        }
+    }
 }

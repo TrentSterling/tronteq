@@ -63,10 +63,13 @@ pub enum ShowMode {
     GlPulsar,
     GlBlackHole,
     GlOcean,
+    StereoScope,
+    Spectrogram,
+    SpectralCity, Cymatics, StereoOrbit,
 }
 
 impl ShowMode {
-    pub const ALL: [ShowMode; 38] = [
+    pub const ALL: [ShowMode; 43] = [
         ShowMode::Off,
         ShowMode::BarsXl,
         ShowMode::ScopeTrails,
@@ -105,6 +108,9 @@ impl ShowMode {
         ShowMode::GlPulsar,
         ShowMode::GlBlackHole,
         ShowMode::GlOcean,
+        ShowMode::StereoScope,
+        ShowMode::Spectrogram,
+        ShowMode::SpectralCity,ShowMode::Cymatics,ShowMode::StereoOrbit,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -146,6 +152,11 @@ impl ShowMode {
             ShowMode::GlPulsar => "Pulsar",
             ShowMode::GlBlackHole => "Black hole",
             ShowMode::GlOcean => "Moonlit ocean",
+            ShowMode::StereoScope => "Stereo scope",
+            ShowMode::Spectrogram => "Spectrogram",
+            ShowMode::StereoOrbit => "Stereo Orbit",
+            ShowMode::Cymatics => "Cymatics",
+            ShowMode::SpectralCity => "Spectral City",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -188,6 +199,11 @@ impl ShowMode {
             ShowMode::GlPulsar => "gl_pulsar",
             ShowMode::GlBlackHole => "gl_blackhole",
             ShowMode::GlOcean => "gl_ocean",
+            ShowMode::StereoScope => "stereo_scope",
+            ShowMode::Spectrogram => "spectrogram",
+            ShowMode::StereoOrbit => "stereo_orbit",
+            ShowMode::Cymatics => "cymatics",
+            ShowMode::SpectralCity => "spectral_city",
         }
     }
     pub fn from_str(s: &str) -> ShowMode {
@@ -229,6 +245,11 @@ impl ShowMode {
             "gl_pulsar" => ShowMode::GlPulsar,
             "gl_blackhole" => ShowMode::GlBlackHole,
             "gl_ocean" => ShowMode::GlOcean,
+            "stereo_scope" => ShowMode::StereoScope,
+            "spectrogram" => ShowMode::Spectrogram,
+            "stereo_orbit" => ShowMode::StereoOrbit,
+            "cymatics" => ShowMode::Cymatics,
+            "spectral_city" => ShowMode::SpectralCity,
             _ => ShowMode::Off,
         }
     }
@@ -239,7 +260,7 @@ impl ShowMode {
             GlWarp | GlFlame | GlSmoke | GlNebula | GlSkybox | GlAurora | GlOcean => "Atmosphere",
             GlStarfield | GlWormhole | GlPulsar | GlBlackHole => "Space",
             GlPlasma | GlKaleido | GlMetaballs | GlVoronoi | GlJulia | GlSpiro | GlHexGrid | GlDna => "Geometry",
-            BarsXl | ScopeTrails | GlTerrain | GlScopeRing | GlCity | GlSonar => "Audio",
+            BarsXl | ScopeTrails | GlTerrain | GlScopeRing | GlCity | GlSonar | StereoScope | Spectrogram | SpectralCity | Cymatics | StereoOrbit => "Audio",
             GlMatrix | GlOutrun | GlDiscoBall | GlCopper | GlLedWall => "Retro",
             Tunnel | Particles | GlTunnel3d | GlRipples | GlLaser | GlLightning | GlBubbles => "Motion",
         }
@@ -296,6 +317,11 @@ impl ShowMode {
             ShowMode::GlPulsar => Some(G::Pulsar),
             ShowMode::GlBlackHole => Some(G::BlackHole),
             ShowMode::GlOcean => Some(G::Ocean),
+            ShowMode::StereoScope => Some(G::StereoScope),
+            ShowMode::Spectrogram => Some(G::Spectrogram),
+            ShowMode::StereoOrbit => Some(G::StereoOrbit),
+            ShowMode::Cymatics => Some(G::Cymatics),
+            ShowMode::SpectralCity => Some(G::SpectralCity),
             _ => None,
         }
     }

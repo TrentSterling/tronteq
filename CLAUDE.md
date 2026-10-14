@@ -4,6 +4,34 @@ Zero-latency Windows system EQ. Our own Audio Processing Object plus a Rust efra
 
 ## Architecture
 
+Local GUI 0.18.0: `viz_motion.rs` owns persisted routes and nonpersisted smoothed
+runtime values; `viz_audition.rs` owns bounded analysis replay and review ratings.
+The renderer receives resolved values without mutating authored settings. A replay
+epoch resets envelopes, feedback and spectrum history. Saved looks include routes,
+macro ranges, palette, scene variants and detail controls. Flame variant 0 remains
+the original. No APO/IPC format changes are part of this visualizer release.
+
+`viz_performance.rs` owns flash envelopes, pads, deck transitions, setlists and
+racks; `performance_panel.rs` exposes them. Both decks use the shared production
+uniform constructor with independent GL feedback resources. Take B swaps these
+and modulation runtimes. Animated fades defer settings writes.
+See `docs/PERFORMANCE_0.16.0.md` for validation.
+
+`patch_bay.rs` exposes combined-source routes and editable curves. `viz_xy.rs`
+owns saved four-corner parameter snapshots; routed XY axes resolve before the
+morph and parameter routes resolve after it. `viz_compositor.rs` blends decks
+and shapes the final pulse history. `viz_record.rs` records resolved inputs and
+runs isolated replay/export. The `--render-take` CLI must dispatch before the
+normal singleton and crash-log initialization. See `docs/INSTRUMENT_0.17.0.md`.
+
+`viz_signals.rs` conditions each deck's inputs with learned ranges and attack/release.
+Persist only its Settings (in each Look); ranges/envelopes stay in MotionRuntime.
+Disabled response preserves original inputs. Stereo coordinates never normalize.
+The compositor's interaction modes use the two completed deck textures; they do
+not feed effects back into either scene. Take B swaps interaction direction.
+Resolved takes store interaction uniforms; legacy takes default to Off.
+See `docs/MUSICALITY_0.18.0.md` for controls and the matched-music gauntlet.
+
 Three artifacts. One IPC file.
 
 ```
@@ -116,7 +144,7 @@ Test-signing must be ON (audiodg refuses unsigned APOs). Self-signed cert must b
 
 The inspector has CHAIN, VIZ, DATA, and SETUP tabs. CHAIN provides precise band
 editing, dynamics, separate A/V sync, session undo/redo, and A/B comparison. VIZ
-has a unified 37-scene library, gallery, saved looks, ordered effects, transitions,
+has a unified 42-scene library, gallery, saved looks, ordered effects, transitions,
 render quality, and presentation mode. Visual undo/redo is separate from sound
 history; Ctrl+Z/Y follows the active inspector. The complete effect stack can be
 enabled/disabled without losing its order or mixes. Sound profiles and visual
@@ -130,6 +158,12 @@ verification notes under `docs/` for behavior and test receipts.
 
 Per-app EQ, INF packaging, and independently controlled simultaneous outputs
 remain outside the current implementation.
+
+Live visual review: `powershell -File tools/run-viz-gauntlet.ps1` while music is
+playing. It captures the production analyzer once and replays the same passage
+through all scenes, without changing the installed GUI or settings. See
+`tools/audit-probe/README.md` for replay and per-scene comparisons. F11 enters
+presentation directly; Left/Right switch scenes and Escape restores the window.
 
 ## Reference Projects (SAMPLES/, gitignored)
 

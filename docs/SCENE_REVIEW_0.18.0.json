@@ -1,0 +1,1015 @@
+{
+  "version": "0.18.0",
+  "source": "Saved 480-frame music passage; fresh live attempt was silent",
+  "scope": "Visual composition review with sampled sequences and objective temporal/audio-difference metrics; one phrase, not genre coverage",
+  "scenes": [
+    {
+      "id": "bars_xl",
+      "name": "Bars XL",
+      "review": "Keep",
+      "note": "Clear frequency structure; suitable reference scene for signal response.",
+      "before": {
+        "audio_difference_0_255": 33.03543852880659,
+        "dark_fraction": 0.5434336419753086,
+        "frame_difference_0_255": 3.816010826682679,
+        "gpu_median_ms": 0.025097420439124107,
+        "id": "bars_xl",
+        "name": "Bars XL",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 33.03543852880659,
+        "dark_fraction": 0.5434336419753086,
+        "frame_difference_0_255": 3.816010826682679,
+        "gpu_median_ms": 0.021013306453824043,
+        "id": "bars_xl",
+        "name": "Bars XL",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "scope_trails",
+      "name": "Scope trails",
+      "review": "Keep",
+      "note": "Readable wave history; generous negative space is intentional.",
+      "before": {
+        "audio_difference_0_255": 6.99884837962963,
+        "dark_fraction": 0.8120833333333334,
+        "frame_difference_0_255": 3.7953063766637425,
+        "gpu_median_ms": 0.02479231357574463,
+        "id": "scope_trails",
+        "name": "Scope trails",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 6.99884837962963,
+        "dark_fraction": 0.8120833333333334,
+        "frame_difference_0_255": 3.7953063766637425,
+        "gpu_median_ms": 0.02649516612291336,
+        "id": "scope_trails",
+        "name": "Scope trails",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "tunnel",
+      "name": "Tunnel",
+      "review": "Keep",
+      "note": "Depth and spectral ring shape read well; compare quieter music in a later pass.",
+      "before": {
+        "audio_difference_0_255": 21.555769675925927,
+        "dark_fraction": 0.6407484567901235,
+        "frame_difference_0_255": 21.028952239591398,
+        "gpu_median_ms": 0.029774097725749016,
+        "id": "tunnel",
+        "name": "Tunnel",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 21.555769675925927,
+        "dark_fraction": 0.6407484567901235,
+        "frame_difference_0_255": 21.028952239591398,
+        "gpu_median_ms": 0.030446680262684822,
+        "id": "tunnel",
+        "name": "Tunnel",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "particles",
+      "name": "Particles",
+      "review": "Polish next",
+      "note": "Sparse in this passage; larger transient emissions and more varied paths would help.",
+      "before": {
+        "audio_difference_0_255": 2.586363811728395,
+        "dark_fraction": 0.956610725308642,
+        "frame_difference_0_255": 1.014443968244744,
+        "gpu_median_ms": 0.11663710325956345,
+        "id": "particles",
+        "name": "Particles",
+        "white_fraction": 0.0005227623456790124
+      },
+      "after": {
+        "audio_difference_0_255": 2.586363811728395,
+        "dark_fraction": 0.956610725308642,
+        "frame_difference_0_255": 1.014443968244744,
+        "gpu_median_ms": 0.11659563332796097,
+        "id": "particles",
+        "name": "Particles",
+        "white_fraction": 0.0005227623456790124
+      }
+    },
+    {
+      "id": "gl_warp",
+      "name": "Warp",
+      "review": "Keep",
+      "note": "Strong central motif with readable motion and useful space for effects.",
+      "before": {
+        "audio_difference_0_255": 43.59261702674897,
+        "dark_fraction": 0.0692554012345679,
+        "frame_difference_0_255": 8.976529494249016,
+        "gpu_median_ms": 0.02754879929125309,
+        "id": "gl_warp",
+        "name": "Warp",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 43.59261702674897,
+        "dark_fraction": 0.0692554012345679,
+        "frame_difference_0_255": 8.976529494249016,
+        "gpu_median_ms": 0.028582315891981125,
+        "id": "gl_warp",
+        "name": "Warp",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_flame",
+      "name": "Flame",
+      "review": "Keep",
+      "note": "Benchmark for layered motion; original review pixels preserved exactly.",
+      "before": {
+        "audio_difference_0_255": 61.29447723765432,
+        "dark_fraction": 0.11999228395061728,
+        "frame_difference_0_255": 14.270311410390521,
+        "gpu_median_ms": 0.03723113611340523,
+        "id": "gl_flame",
+        "name": "Flame",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 61.29447723765432,
+        "dark_fraction": 0.11999228395061728,
+        "frame_difference_0_255": 14.270311410390521,
+        "gpu_median_ms": 0.033060476183891296,
+        "id": "gl_flame",
+        "name": "Flame",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_smoke",
+      "name": "Smoke",
+      "review": "Polish next",
+      "note": "Atmospheric field works well for deck interaction; needs stronger focal structure standalone.",
+      "before": {
+        "audio_difference_0_255": 32.504534465020576,
+        "dark_fraction": 0.15357445987654322,
+        "frame_difference_0_255": 1.6415572833264458,
+        "gpu_median_ms": 0.0328437015414238,
+        "id": "gl_smoke",
+        "name": "Smoke",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 32.504534465020576,
+        "dark_fraction": 0.15357445987654322,
+        "frame_difference_0_255": 1.6415572833264458,
+        "gpu_median_ms": 0.03327006846666336,
+        "id": "gl_smoke",
+        "name": "Smoke",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_plasma",
+      "name": "Plasma",
+      "review": "Keep",
+      "note": "Clear color masses; classic full-screen texture with strong audio difference.",
+      "before": {
+        "audio_difference_0_255": 78.07187885802469,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 19.659739058706563,
+        "gpu_median_ms": 0.026074396446347237,
+        "id": "gl_plasma",
+        "name": "Plasma",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 78.07187885802469,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 19.659739058706563,
+        "gpu_median_ms": 0.02724895067512989,
+        "id": "gl_plasma",
+        "name": "Plasma",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_starfield",
+      "name": "Starfield",
+      "review": "Keep",
+      "note": "Travel reads clearly; full-frame brightness merits checking against quiet music.",
+      "before": {
+        "audio_difference_0_255": 65.0483526234568,
+        "dark_fraction": 0.3010069444444444,
+        "frame_difference_0_255": 26.240485597245907,
+        "gpu_median_ms": 0.038833778351545334,
+        "id": "gl_starfield",
+        "name": "Starfield",
+        "white_fraction": 0.039106867283950617
+      },
+      "after": {
+        "audio_difference_0_255": 65.0483526234568,
+        "dark_fraction": 0.3010069444444444,
+        "frame_difference_0_255": 26.240485597245907,
+        "gpu_median_ms": 0.0351211354136467,
+        "id": "gl_starfield",
+        "name": "Starfield",
+        "white_fraction": 0.039106867283950617
+      }
+    },
+    {
+      "id": "gl_kaleido",
+      "name": "Kaleido",
+      "review": "Improved",
+      "note": "Rebuilt as a true folded lattice; mirror count, scale, glow and persistence exposed.",
+      "before": {
+        "audio_difference_0_255": 55.58115162037037,
+        "dark_fraction": 0.48712962962962963,
+        "frame_difference_0_255": 32.85700889282762,
+        "gpu_median_ms": 0.02604774385690689,
+        "id": "gl_kaleido",
+        "name": "Kaleido",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 27.335224408436215,
+        "dark_fraction": 0.329945987654321,
+        "frame_difference_0_255": 13.227411526400303,
+        "gpu_median_ms": 0.0345943383872509,
+        "id": "gl_kaleido",
+        "name": "Kaleido",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_tunnel3d",
+      "name": "Ray tunnel",
+      "review": "Polish next",
+      "note": "Soft colored spokes dominate; geometry and depth could be more distinct.",
+      "before": {
+        "audio_difference_0_255": 61.04348701131687,
+        "dark_fraction": 0.0056442901234567905,
+        "frame_difference_0_255": 26.346142497245047,
+        "gpu_median_ms": 0.02547948807477951,
+        "id": "gl_tunnel3d",
+        "name": "Ray tunnel",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 61.04348701131687,
+        "dark_fraction": 0.0056442901234567905,
+        "frame_difference_0_255": 26.346142497245047,
+        "gpu_median_ms": 0.02420644275844097,
+        "id": "gl_tunnel3d",
+        "name": "Ray tunnel",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_metaballs",
+      "name": "Metaballs",
+      "review": "Keep",
+      "note": "Coherent soft shapes; brightness is concentrated in small centers.",
+      "before": {
+        "audio_difference_0_255": 60.224008487654324,
+        "dark_fraction": 0.28604359567901233,
+        "frame_difference_0_255": 4.091323727551354,
+        "gpu_median_ms": 0.025601616129279137,
+        "id": "gl_metaballs",
+        "name": "Metaballs",
+        "white_fraction": 0.010291280864197531
+      },
+      "after": {
+        "audio_difference_0_255": 60.224008487654324,
+        "dark_fraction": 0.28604359567901233,
+        "frame_difference_0_255": 4.091323727551354,
+        "gpu_median_ms": 0.021566513925790787,
+        "id": "gl_metaballs",
+        "name": "Metaballs",
+        "white_fraction": 0.010291280864197531
+      }
+    },
+    {
+      "id": "gl_voronoi",
+      "name": "Voronoi",
+      "review": "Polish next",
+      "note": "Flat cells are useful as a modulation field; standalone scene needs depth and boundary detail.",
+      "before": {
+        "audio_difference_0_255": 63.69234439300411,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 5.813297002255627,
+        "gpu_median_ms": 0.03291750326752663,
+        "id": "gl_voronoi",
+        "name": "Voronoi",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 63.69234439300411,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 5.813297002255627,
+        "gpu_median_ms": 0.02998282015323639,
+        "id": "gl_voronoi",
+        "name": "Voronoi",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_nebula",
+      "name": "Nebula",
+      "review": "Keep",
+      "note": "Cloud structure fills the frame without losing dark separation.",
+      "before": {
+        "audio_difference_0_255": 15.802566229423869,
+        "dark_fraction": 0.0015104166666666666,
+        "frame_difference_0_255": 0.6285191050243648,
+        "gpu_median_ms": 0.04299622029066086,
+        "id": "gl_nebula",
+        "name": "Nebula",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 15.802566229423869,
+        "dark_fraction": 0.0015104166666666666,
+        "frame_difference_0_255": 0.6285191050243648,
+        "gpu_median_ms": 0.0382160022854805,
+        "id": "gl_nebula",
+        "name": "Nebula",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_terrain",
+      "name": "Terrain",
+      "review": "Keep",
+      "note": "Ridges and horizon are readable; used as the base of Flame flow.",
+      "before": {
+        "audio_difference_0_255": 16.065004501028806,
+        "dark_fraction": 0.3560204475308642,
+        "frame_difference_0_255": 8.52869732747043,
+        "gpu_median_ms": 0.12405072897672653,
+        "id": "gl_terrain",
+        "name": "Terrain",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 16.065004501028806,
+        "dark_fraction": 0.3560204475308642,
+        "frame_difference_0_255": 8.52869732747043,
+        "gpu_median_ms": 0.11547279357910156,
+        "id": "gl_terrain",
+        "name": "Terrain",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_ripples",
+      "name": "Ripples",
+      "review": "Polish next",
+      "note": "Soft central glow overwhelms individual wave fronts; separate rings would improve it.",
+      "before": {
+        "audio_difference_0_255": 41.04839699074074,
+        "dark_fraction": 0.24940586419753086,
+        "frame_difference_0_255": 5.374239570957521,
+        "gpu_median_ms": 0.022662291303277016,
+        "id": "gl_ripples",
+        "name": "Ripples",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 41.04839699074074,
+        "dark_fraction": 0.24940586419753086,
+        "frame_difference_0_255": 5.374239570957521,
+        "gpu_median_ms": 0.023419909179210663,
+        "id": "gl_ripples",
+        "name": "Ripples",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_julia",
+      "name": "Julia",
+      "review": "Improved",
+      "note": "Stable orbit and narrow rim reveal colorful fractal filaments.",
+      "before": {
+        "audio_difference_0_255": 70.63980324074075,
+        "dark_fraction": 0.07136188271604939,
+        "frame_difference_0_255": 15.688451514261228,
+        "gpu_median_ms": 0.04622329771518707,
+        "id": "gl_julia",
+        "name": "Julia",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 45.08501093106996,
+        "dark_fraction": 0.0019675925925925924,
+        "frame_difference_0_255": 13.957095093044568,
+        "gpu_median_ms": 0.04271405562758446,
+        "id": "gl_julia",
+        "name": "Julia",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_matrix",
+      "name": "Matrix rain",
+      "review": "Keep",
+      "note": "Layered glyph columns and brighter heads remain legible.",
+      "before": {
+        "audio_difference_0_255": 4.264008487654321,
+        "dark_fraction": 0.865,
+        "frame_difference_0_255": 1.7972160289357235,
+        "gpu_median_ms": 0.028176922351121902,
+        "id": "gl_matrix",
+        "name": "Matrix rain",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 4.264008487654321,
+        "dark_fraction": 0.865,
+        "frame_difference_0_255": 1.7972160289357235,
+        "gpu_median_ms": 0.02729622647166252,
+        "id": "gl_matrix",
+        "name": "Matrix rain",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_scopering",
+      "name": "Scope ring",
+      "review": "Keep",
+      "note": "Waveform carries detail around the circle; dense passages have a clear silhouette.",
+      "before": {
+        "audio_difference_0_255": 35.218249742798356,
+        "dark_fraction": 0.07680555555555556,
+        "frame_difference_0_255": 10.00369687817466,
+        "gpu_median_ms": 0.026738828048110008,
+        "id": "gl_scopering",
+        "name": "Scope ring",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 35.218249742798356,
+        "dark_fraction": 0.07680555555555556,
+        "frame_difference_0_255": 10.00369687817466,
+        "gpu_median_ms": 0.02453666739165783,
+        "id": "gl_scopering",
+        "name": "Scope ring",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_skybox",
+      "name": "Sky",
+      "review": "Polish next",
+      "note": "Horizon and clouds work; the unused lower half could carry reflections or terrain.",
+      "before": {
+        "audio_difference_0_255": 12.85433320473251,
+        "dark_fraction": 0.30925925925925923,
+        "frame_difference_0_255": 0.9659132864559123,
+        "gpu_median_ms": 0.12345561385154724,
+        "id": "gl_skybox",
+        "name": "Sky",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 12.85433320473251,
+        "dark_fraction": 0.30925925925925923,
+        "frame_difference_0_255": 0.9659132864559123,
+        "gpu_median_ms": 0.11896690726280212,
+        "id": "gl_skybox",
+        "name": "Sky",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_aurora",
+      "name": "Aurora",
+      "review": "Polish next",
+      "note": "Curtains read; coarse star blocks compete with their softer texture.",
+      "before": {
+        "audio_difference_0_255": 32.5029983281893,
+        "dark_fraction": 0.6328896604938271,
+        "frame_difference_0_255": 3.6088896260567886,
+        "gpu_median_ms": 0.06450679898262024,
+        "id": "gl_aurora",
+        "name": "Aurora",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 32.5029983281893,
+        "dark_fraction": 0.6328896604938271,
+        "frame_difference_0_255": 3.6088896260567886,
+        "gpu_median_ms": 0.06526084244251251,
+        "id": "gl_aurora",
+        "name": "Aurora",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_outrun",
+      "name": "Outrun",
+      "review": "Keep",
+      "note": "Strong horizon and road composition with a recognizable mood.",
+      "before": {
+        "audio_difference_0_255": 40.24553755144033,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 6.87626535407735,
+        "gpu_median_ms": 0.028031550347805023,
+        "id": "gl_outrun",
+        "name": "Outrun",
+        "white_fraction": 0.001109182098765432
+      },
+      "after": {
+        "audio_difference_0_255": 40.24553755144033,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 6.87626535407735,
+        "gpu_median_ms": 0.02939707227051258,
+        "id": "gl_outrun",
+        "name": "Outrun",
+        "white_fraction": 0.001109182098765432
+      }
+    },
+    {
+      "id": "gl_city",
+      "name": "Spectrum city",
+      "review": "Keep",
+      "note": "Building depth and spectral height read clearly; dense color can be tamed with palette controls.",
+      "before": {
+        "audio_difference_0_255": 61.91791666666666,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 38.45216450520429,
+        "gpu_median_ms": 0.09155646711587906,
+        "id": "gl_city",
+        "name": "Spectrum city",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 61.91791666666666,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 38.45216450520429,
+        "gpu_median_ms": 0.08441122621297836,
+        "id": "gl_city",
+        "name": "Spectrum city",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_wormhole",
+      "name": "Wormhole",
+      "review": "Keep",
+      "note": "Good sense of travel and active edge detail.",
+      "before": {
+        "audio_difference_0_255": 44.69319894547325,
+        "dark_fraction": 0.0360204475308642,
+        "frame_difference_0_255": 20.19118700981026,
+        "gpu_median_ms": 0.028520092368125916,
+        "id": "gl_wormhole",
+        "name": "Wormhole",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 44.69319894547325,
+        "dark_fraction": 0.0360204475308642,
+        "frame_difference_0_255": 20.19118700981026,
+        "gpu_median_ms": 0.029308326542377472,
+        "id": "gl_wormhole",
+        "name": "Wormhole",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_spiro",
+      "name": "Spirograph",
+      "review": "Polish next",
+      "note": "Pleasant colored curves; feedback obscures some fine line structure.",
+      "before": {
+        "audio_difference_0_255": 53.82377700617284,
+        "dark_fraction": 0.40771990740740743,
+        "frame_difference_0_255": 9.987471764317199,
+        "gpu_median_ms": 0.10128980129957199,
+        "id": "gl_spiro",
+        "name": "Spirograph",
+        "white_fraction": 0.006614583333333333
+      },
+      "after": {
+        "audio_difference_0_255": 53.82377700617284,
+        "dark_fraction": 0.40771990740740743,
+        "frame_difference_0_255": 9.987471764317199,
+        "gpu_median_ms": 0.09988301992416382,
+        "id": "gl_spiro",
+        "name": "Spirograph",
+        "white_fraction": 0.006614583333333333
+      }
+    },
+    {
+      "id": "gl_laser",
+      "name": "Laser show",
+      "review": "Improved",
+      "note": "Distinct narrow beams and bounded haze retain readable crossings.",
+      "before": {
+        "audio_difference_0_255": 133.53533050411522,
+        "dark_fraction": 2.507716049382716e-05,
+        "frame_difference_0_255": 28.526671767653273,
+        "gpu_median_ms": 0.08835237473249435,
+        "id": "gl_laser",
+        "name": "Laser show",
+        "white_fraction": 0.021240354938271606
+      },
+      "after": {
+        "audio_difference_0_255": 18.963403420781894,
+        "dark_fraction": 0.3315972222222222,
+        "frame_difference_0_255": 15.344248037626766,
+        "gpu_median_ms": 0.09231908619403839,
+        "id": "gl_laser",
+        "name": "Laser show",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_discoball",
+      "name": "Disco ball",
+      "review": "Keep",
+      "note": "Central facets separate cleanly from the moving lights.",
+      "before": {
+        "audio_difference_0_255": 59.703297968106995,
+        "dark_fraction": 0.0006230709876543209,
+        "frame_difference_0_255": 15.553200341787644,
+        "gpu_median_ms": 0.05705941095948219,
+        "id": "gl_discoball",
+        "name": "Disco ball",
+        "white_fraction": 0.0026311728395061727
+      },
+      "after": {
+        "audio_difference_0_255": 59.703297968106995,
+        "dark_fraction": 0.0006230709876543209,
+        "frame_difference_0_255": 15.553200341787644,
+        "gpu_median_ms": 0.054985012859106064,
+        "id": "gl_discoball",
+        "name": "Disco ball",
+        "white_fraction": 0.0026311728395061727
+      }
+    },
+    {
+      "id": "gl_hexgrid",
+      "name": "Hex pulse",
+      "review": "Keep",
+      "note": "Legible cells; strong geometric option for a second deck.",
+      "before": {
+        "audio_difference_0_255": 57.04897633744856,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 10.087198597874366,
+        "gpu_median_ms": 0.027015510946512222,
+        "id": "gl_hexgrid",
+        "name": "Hex pulse",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 57.04897633744856,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 10.087198597874366,
+        "gpu_median_ms": 0.026827767491340637,
+        "id": "gl_hexgrid",
+        "name": "Hex pulse",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_lightning",
+      "name": "Lightning",
+      "review": "Polish next",
+      "note": "Bolts read as vertical traces; branching and larger spatial variation would improve the identity.",
+      "before": {
+        "audio_difference_0_255": 71.96333719135802,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 15.673604780614541,
+        "gpu_median_ms": 0.23690587282180786,
+        "id": "gl_lightning",
+        "name": "Lightning",
+        "white_fraction": 0.10219521604938271
+      },
+      "after": {
+        "audio_difference_0_255": 71.96333719135802,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 15.673604780614541,
+        "gpu_median_ms": 0.23422405123710632,
+        "id": "gl_lightning",
+        "name": "Lightning",
+        "white_fraction": 0.10219521604938271
+      }
+    },
+    {
+      "id": "gl_dna",
+      "name": "DNA helix",
+      "review": "Keep",
+      "note": "The central helix reads; the open sides support layered effects.",
+      "before": {
+        "audio_difference_0_255": 9.474583976337449,
+        "dark_fraction": 0.8779610339506173,
+        "frame_difference_0_255": 1.990253260219191,
+        "gpu_median_ms": 0.023811813443899155,
+        "id": "gl_dna",
+        "name": "DNA helix",
+        "white_fraction": 0.00022376543209876544
+      },
+      "after": {
+        "audio_difference_0_255": 9.474583976337449,
+        "dark_fraction": 0.8779610339506173,
+        "frame_difference_0_255": 1.990253260219191,
+        "gpu_median_ms": 0.022768914699554443,
+        "id": "gl_dna",
+        "name": "DNA helix",
+        "white_fraction": 0.00022376543209876544
+      }
+    },
+    {
+      "id": "gl_bubbles",
+      "name": "Bubbles",
+      "review": "Keep",
+      "note": "Bubble rims and glints remain separated from the background.",
+      "before": {
+        "audio_difference_0_255": 16.05172389403292,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 15.823291879745861,
+        "gpu_median_ms": 0.242692232131958,
+        "id": "gl_bubbles",
+        "name": "Bubbles",
+        "white_fraction": 0.0016087962962962963
+      },
+      "after": {
+        "audio_difference_0_255": 16.05172389403292,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 15.823291879745861,
+        "gpu_median_ms": 0.24554307758808136,
+        "id": "gl_bubbles",
+        "name": "Bubbles",
+        "white_fraction": 0.0016087962962962963
+      }
+    },
+    {
+      "id": "gl_copper",
+      "name": "Copper bars",
+      "review": "Improved",
+      "note": "Separate metallic ribbons replace the clipped white band; four controls added.",
+      "before": {
+        "audio_difference_0_255": 102.80123456790123,
+        "dark_fraction": 0.2611111111111111,
+        "frame_difference_0_255": 14.414665013688726,
+        "gpu_median_ms": 0.03349281847476959,
+        "id": "gl_copper",
+        "name": "Copper bars",
+        "white_fraction": 0.337037037037037
+      },
+      "after": {
+        "audio_difference_0_255": 11.187454346707819,
+        "dark_fraction": 0.7648611111111111,
+        "frame_difference_0_255": 6.990451031066517,
+        "gpu_median_ms": 0.043832916766405106,
+        "id": "gl_copper",
+        "name": "Copper bars",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_ledwall",
+      "name": "LED wall",
+      "review": "Keep",
+      "note": "Dot grid and peak shape read clearly with the captured spectrum.",
+      "before": {
+        "audio_difference_0_255": 30.31052276234568,
+        "dark_fraction": 0.5957484567901234,
+        "frame_difference_0_255": 4.224630151566024,
+        "gpu_median_ms": 0.02815171331167221,
+        "id": "gl_ledwall",
+        "name": "LED wall",
+        "white_fraction": 0.003414351851851852
+      },
+      "after": {
+        "audio_difference_0_255": 30.31052276234568,
+        "dark_fraction": 0.5957484567901234,
+        "frame_difference_0_255": 4.224630151566024,
+        "gpu_median_ms": 0.025427380576729774,
+        "id": "gl_ledwall",
+        "name": "LED wall",
+        "white_fraction": 0.003414351851851852
+      }
+    },
+    {
+      "id": "gl_sonar",
+      "name": "Sonar",
+      "review": "Improved",
+      "note": "Grid, sweep and blips stay distinct under bounded phosphor trails.",
+      "before": {
+        "audio_difference_0_255": 21.70638181584362,
+        "dark_fraction": 0.6095717592592592,
+        "frame_difference_0_255": 2.079318846100867,
+        "gpu_median_ms": 0.04606176167726517,
+        "id": "gl_sonar",
+        "name": "Sonar",
+        "white_fraction": 0.05660300925925926
+      },
+      "after": {
+        "audio_difference_0_255": 9.775932355967079,
+        "dark_fraction": 0.6909722222222222,
+        "frame_difference_0_255": 2.071770801048607,
+        "gpu_median_ms": 0.04496806114912033,
+        "id": "gl_sonar",
+        "name": "Sonar",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_pulsar",
+      "name": "Pulsar",
+      "review": "Improved",
+      "note": "Smaller core and bounded trails expose opposing beams and shockwaves.",
+      "before": {
+        "audio_difference_0_255": 81.39205954218107,
+        "dark_fraction": 0.05834876543209876,
+        "frame_difference_0_255": 15.237064656619658,
+        "gpu_median_ms": 0.04514007642865181,
+        "id": "gl_pulsar",
+        "name": "Pulsar",
+        "white_fraction": 0.23510416666666667
+      },
+      "after": {
+        "audio_difference_0_255": 30.988670910493827,
+        "dark_fraction": 0.3055150462962963,
+        "frame_difference_0_255": 11.060427942107031,
+        "gpu_median_ms": 0.04285600781440735,
+        "id": "gl_pulsar",
+        "name": "Pulsar",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "gl_blackhole",
+      "name": "Black hole",
+      "review": "Polish next",
+      "note": "Concentric rings dominate; a tilted disk and stronger lensing would improve depth.",
+      "before": {
+        "audio_difference_0_255": 60.475977366255144,
+        "dark_fraction": 0.054712577160493825,
+        "frame_difference_0_255": 36.8862409575865,
+        "gpu_median_ms": 0.031944483518600464,
+        "id": "gl_blackhole",
+        "name": "Black hole",
+        "white_fraction": 0.02584297839506173
+      },
+      "after": {
+        "audio_difference_0_255": 60.475977366255144,
+        "dark_fraction": 0.054712577160493825,
+        "frame_difference_0_255": 36.8862409575865,
+        "gpu_median_ms": 0.03493720665574074,
+        "id": "gl_blackhole",
+        "name": "Black hole",
+        "white_fraction": 0.02584297839506173
+      }
+    },
+    {
+      "id": "gl_ocean",
+      "name": "Moonlit ocean",
+      "review": "Polish next",
+      "note": "Moon and horizon work; blocky surface highlights and stars need softer shaping.",
+      "before": {
+        "audio_difference_0_255": 21.072723122427984,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 3.335356982970882,
+        "gpu_median_ms": 0.03171492740511894,
+        "id": "gl_ocean",
+        "name": "Moonlit ocean",
+        "white_fraction": 0.01488233024691358
+      },
+      "after": {
+        "audio_difference_0_255": 21.072723122427984,
+        "dark_fraction": 0.0,
+        "frame_difference_0_255": 3.335356982970882,
+        "gpu_median_ms": 0.03270506486296654,
+        "id": "gl_ocean",
+        "name": "Moonlit ocean",
+        "white_fraction": 0.01488233024691358
+      }
+    },
+    {
+      "id": "stereo_scope",
+      "name": "Stereo scope",
+      "review": "Keep",
+      "note": "Stereo distribution is readable; the sculpture variant provides a fuller alternative.",
+      "before": {
+        "audio_difference_0_255": 2.2412834362139917,
+        "dark_fraction": 0.9088271604938272,
+        "frame_difference_0_255": 1.1306308489160946,
+        "gpu_median_ms": 0.15219756960868835,
+        "id": "stereo_scope",
+        "name": "Stereo scope",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 2.2412834362139917,
+        "dark_fraction": 0.9088271604938272,
+        "frame_difference_0_255": 1.1306308489160946,
+        "gpu_median_ms": 0.15080022811889648,
+        "id": "stereo_scope",
+        "name": "Stereo scope",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "spectrogram",
+      "name": "Spectrogram",
+      "review": "Keep",
+      "note": "Clear frequency history; useful as both analysis and a displacement field.",
+      "before": {
+        "audio_difference_0_255": 74.66758487654322,
+        "dark_fraction": 0.0007330246913580247,
+        "frame_difference_0_255": 4.715139125643543,
+        "gpu_median_ms": 0.023960581049323082,
+        "id": "spectrogram",
+        "name": "Spectrogram",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 74.66758487654322,
+        "dark_fraction": 0.0007330246913580247,
+        "frame_difference_0_255": 4.715139125643543,
+        "gpu_median_ms": 0.01967432349920273,
+        "id": "spectrogram",
+        "name": "Spectrogram",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "spectral_city",
+      "name": "Spectral City",
+      "review": "Keep",
+      "note": "History-driven towers and windows give a strong sense of scale.",
+      "before": {
+        "audio_difference_0_255": 23.27705954218107,
+        "dark_fraction": 0.06828317901234568,
+        "frame_difference_0_255": 7.404344816472095,
+        "gpu_median_ms": 0.092692531645298,
+        "id": "spectral_city",
+        "name": "Spectral City",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 23.27705954218107,
+        "dark_fraction": 0.06828317901234568,
+        "frame_difference_0_255": 7.404344816472095,
+        "gpu_median_ms": 0.09409353137016296,
+        "id": "spectral_city",
+        "name": "Spectral City",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "cymatics",
+      "name": "Cymatics",
+      "review": "Keep",
+      "note": "Fine plate pattern remains readable against a restrained background.",
+      "before": {
+        "audio_difference_0_255": 8.181199845679012,
+        "dark_fraction": 0.8705767746913581,
+        "frame_difference_0_255": 3.8620367733784495,
+        "gpu_median_ms": 0.02573573589324951,
+        "id": "cymatics",
+        "name": "Cymatics",
+        "white_fraction": 0.0
+      },
+      "after": {
+        "audio_difference_0_255": 8.181199845679012,
+        "dark_fraction": 0.8705767746913581,
+        "frame_difference_0_255": 3.8620367733784495,
+        "gpu_median_ms": 0.026102809235453606,
+        "id": "cymatics",
+        "name": "Cymatics",
+        "white_fraction": 0.0
+      }
+    },
+    {
+      "id": "stereo_orbit",
+      "name": "Stereo Orbit",
+      "review": "Keep",
+      "note": "Two distinct traces make stereo structure visible without filling the whole frame.",
+      "before": {
+        "audio_difference_0_255": 5.963514660493827,
+        "dark_fraction": 0.8864293981481481,
+        "frame_difference_0_255": 2.3360541554746295,
+        "gpu_median_ms": 0.029214635491371155,
+        "id": "stereo_orbit",
+        "name": "Stereo Orbit",
+        "white_fraction": 1.9290123456790124e-06
+      },
+      "after": {
+        "audio_difference_0_255": 5.963514660493827,
+        "dark_fraction": 0.8864293981481481,
+        "frame_difference_0_255": 2.3360541554746295,
+        "gpu_median_ms": 0.02690042555332184,
+        "id": "stereo_orbit",
+        "name": "Stereo Orbit",
+        "white_fraction": 1.9290123456790124e-06
+      }
+    }
+  ]
+}

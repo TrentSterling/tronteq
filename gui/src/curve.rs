@@ -83,7 +83,7 @@ pub fn draw(
     // SHOW eye-candy renders as the deepest layer; grid + analyzers + the EQ
     // curve stack on top so the canvas stays interactive. GL modes go through
     // the shader stage (feedback rendertextures); painter modes draw inline.
-    if let (Some(mode), Some(stage)) = (show.mode.gl_mode(), gl) {
+    if let (Some(mode), Some(stage)) = (if uni.playback{Some(uni.mode)}else{show.mode.gl_mode()}, gl) {
         let mut u = uni;
         u.mode = mode;
         let stage = stage.clone();

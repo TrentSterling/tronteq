@@ -106,6 +106,24 @@ impl Quality {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VizSettings {
+    pub xy: crate::viz_xy::Xy,
+    pub pulse_control: crate::viz_compositor::Pulse,
+    pub performance: crate::viz_performance::Performance,
+    pub flash: crate::viz_performance::Flash,
+    pub transform: [f32;4],
+    pub saved_racks: Vec<crate::viz_performance::Rack>,
+    pub motion: crate::viz_motion::Motion,
+    pub scene_variants: std::collections::BTreeMap<String, u32>,
+    pub scene_details: std::collections::BTreeMap<String, [f32; 4]>,
+    pub hue: f32,
+    pub saturation: f32,
+    pub accent: Option<[f32; 3]>,
+    /// Independent input gains: bass, mids, treble, beat, spectral flux, stereo width.
+    pub signal_gains: [f32; 6],
+    pub signal_response: crate::viz_signals::Settings,
+    /// Scene-local controls survive switching scenes and are included in saved looks.
+    pub scene_controls: std::collections::BTreeMap<String, [f32; 4]>,
+    pub review_ratings: std::collections::BTreeMap<String, crate::viz_audition::Rating>,
     pub stage_view: bool,
     pub overlays_in_stage: bool,
     pub speed: f32,
@@ -125,6 +143,18 @@ pub struct VizSettings {
 impl Default for VizSettings {
     fn default() -> Self {
         Self {
+            xy: Default::default(),
+            pulse_control:Default::default(),
+            performance: Default::default(), flash: Default::default(), transform:[1.0,0.0,0.0,0.0], saved_racks:vec![],
+            motion: Default::default(),
+            scene_variants: Default::default(), scene_details: Default::default(),
+            hue: 0.0,
+            saturation: 1.0,
+            accent: None,
+            signal_gains: [1.0; 6],
+            signal_response: Default::default(),
+            scene_controls: Default::default(),
+            review_ratings: Default::default(),
             stage_view: false,
             overlays_in_stage: false,
             speed: 1.0,
@@ -167,7 +197,31 @@ impl VizSettings {
                 default
             }
         };
+        self.motion.sanitize();
+        self.signal_response.sanitize();
+        self.xy.sanitize();
+        self.pulse_control.sanitize();
+        self.performance.sanitize();self.flash.sanitize();
+        for (i,key) in ["zoom","rotation","pan_x","pan_y"].iter().enumerate() { let (lo,hi)=crate::viz_motion::bounds(key).unwrap();self.transform[i]=finite(self.transform[i],lo,hi,if i==0 {1.0} else {0.0}); }
+        self.scene_variants.retain(|key, value| {
+            let max = match key.as_str() { "gl_flame" => 4, "stereo_scope" => 1, _ => return false };
+            *value = (*value).min(max); true
+        });
+        self.scene_details.retain(|key, controls| {
+            for v in controls { *v = finite(*v, 0.0, 2.0, 1.0); }
+            key == "gl_flame" || key == "stereo_scope"
+        });
+        self.hue = finite(self.hue, 0.0, 1.0, 0.0);
+        self.saturation = finite(self.saturation, 0.0, 2.0, 1.0);
+        if let Some(accent) = &mut self.accent {
+            for v in accent { *v = finite(*v, 0.0, 1.0, 0.5); }
+        }
         self.speed = finite(self.speed, 0.0, 2.0, 1.0);
+        for gain in &mut self.signal_gains { *gain = finite(*gain, 0.0, 2.0, 1.0); }
+        self.scene_controls.retain(|id, controls| {
+            for value in controls { *value = finite(*value, 0.0, 2.0, 1.0); }
+            crate::show::ShowMode::from_str(id) != crate::show::ShowMode::Off
+        });
         self.energy = finite(self.energy, 0.0, 2.0, 1.0);
         self.brightness = finite(self.brightness, 0.1, 1.5, 1.0);
         self.shuffle_seconds = finite(self.shuffle_seconds, 5.0, 120.0, 18.0);
@@ -260,12 +314,23 @@ mod tests {
     #[test]
     fn shuffle_includes_all_scenes_and_honors_favorites() {
         let mut v = VizSettings::default();
-        assert_eq!(v.scene_pool().len(), 37);
+        assert_eq!(v.scene_pool().len(), crate::glstage::MODE_COUNT);
         v.favorites = vec!["particles".into(), "gl_ocean".into(), "missing".into()];
         v.shuffle_favorites = true;
         v.sanitize();
         assert_eq!(v.scene_pool().len(), 2);
         assert_eq!(v.favorites.len(), 2);
+    }
+    #[test]
+    fn driver_and_scene_controls_bound_corrupt_values() {
+        let mut v = VizSettings::default();
+        v.signal_gains = [f32::NAN, -2.0, 4.0, 0.0, 1.3, f32::INFINITY];
+        v.scene_controls.insert("tunnel".into(), [f32::NAN, -1.0, 9.0, 0.5]);
+        v.scene_controls.insert("missing".into(), [1.0; 4]);
+        v.sanitize();
+        assert_eq!(v.signal_gains, [1.0, 0.0, 2.0, 0.0, 1.3, 1.0]);
+        assert_eq!(v.scene_controls["tunnel"], [1.0, 0.0, 2.0, 0.5]);
+        assert!(!v.scene_controls.contains_key("missing"));
     }
     #[test]
     fn effect_comparison_migrates_enabled_and_roundtrips_without_losing_the_stack() {

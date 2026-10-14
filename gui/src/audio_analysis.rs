@@ -193,6 +193,11 @@ impl Analyzer {
                 *power += bin.norm_sqr() / self.channels as f32;
             }
         }
+        // Flatness uses linear FFT powers before logarithmic display compression.
+        let bins = &powers[1..];
+        let arithmetic = bins.iter().sum::<f32>() / bins.len() as f32;
+        let geometric = (bins.iter().map(|v| v.max(1e-20).ln()).sum::<f32>() / bins.len() as f32).exp();
+        self.bus.tonality = if arithmetic < 1e-10 { 0.0 } else { (1.0-geometric/arithmetic).clamp(0.0,1.0) };
         let strongest = (0..self.channels)
             .max_by(|&a, &b| channel_energy[a].total_cmp(&channel_energy[b]))
             .unwrap();
@@ -265,6 +270,15 @@ mod tests {
             let s = 0.1 * (std::f32::consts::TAU * 1000.0 * i as f32 / a.rate as f32).sin();
             a.feed(&[s, s * right_phase]);
         }
+    }
+    #[test]
+    fn tonal_noise_and_stereo_balance_are_distinct_sources() {
+        let mut tonal=Analyzer::new(48_000,2);tone(&mut tonal,24_000,0.0);
+        let t=tonal.snapshot();assert!(t.bus.balance < -0.99);assert!(t.bus.tonality>0.95);
+        let mut noise=Analyzer::new(48_000,2);let mut seed=42u32;
+        for _ in 0..24_000 {seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);let v=(seed as f32/u32::MAX as f32-0.5)*0.2;noise.feed(&[0.0,v]);}
+        let n=noise.snapshot();assert!(n.bus.balance>0.99);assert!(n.bus.tonality<t.bus.tonality-0.2);
+        noise.silence(96_000);let quiet=noise.snapshot();assert_eq!(quiet.bus.balance,0.0);assert_eq!(quiet.bus.tonality,0.0);
     }
     #[test]
     fn opposite_phase_has_the_same_spectrum_and_levels_as_in_phase() {
