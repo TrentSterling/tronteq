@@ -52,6 +52,20 @@ open, so the audit can be updated by hand.
   `override_text_color`). Wire it in the first time a filled accent button is
   added.
 - The installer does not refuse downgrades (TrontSnap's bootstrap does).
+- `bootstrap.ps1` and `make-dist.ps1` never build and never skip a build: they
+  require a prior `cargo build --release --workspace` and fail if the exes are
+  missing, so the audit's "skips its own build" trap is not present here. They
+  do install or package whatever sits in `target\release` without a version
+  receipt. Only `install-user-startup.ps1` got the log line.
+
+## Deploy caveat
+
+The installed GUI at `%LOCALAPPDATA%\Programs\TrontEQ\tronteq.exe` was not
+touched. The sweep rebuilt `target\release` (whole dirty tree, including the
+0.16 to 0.18 visualizer work), so that exe now differs from the installed one.
+Run `dev-cycle.ps1` to see the Light/Dark flip and the About exe path. Until
+then the running app is the old build, which is the stale-build trap this
+sweep's About change is meant to expose.
 
 ## Verification
 
