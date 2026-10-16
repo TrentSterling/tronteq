@@ -12,6 +12,7 @@ mod dsp_preview;
 mod glstage;
 mod inspector;
 mod knob;
+mod mic_monitor;
 mod mic_panel;
 mod presets;
 mod profiler;

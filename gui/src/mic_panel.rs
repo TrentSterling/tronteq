@@ -2,6 +2,8 @@
 //! that the capture APO runs on one microphone. Settings live in `mic.bin`,
 //! separate from the output sound, its profiles, and its undo history. Anything
 //! that opens the mic in shared mode (Axela, Discord, OBS) hears the result.
+//! The tab's monitor (`mic_monitor.rs`) draws the mic's live spectrum under the
+//! same draggable curve as the main EQ and can play the mic back ("listen").
 
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -10,13 +12,10 @@ use eframe::egui;
 use tronteq_shared::mic::{self, MicHandle, MicSettings};
 use tronteq_shared::Telemetry;
 
-use crate::{devices, knob, theme};
+use crate::mic_monitor::MicMonitor;
+use crate::{curve, devices, knob, theme};
 
-/// Indices into the mic preset band layout (see `tronteq_shared::mic::preset`).
-const HPF: usize = 0;
-const MUD: usize = 2;
-const PRESENCE: usize = 6;
-const AIR: usize = 7;
+const CURVE_HEIGHT: f32 = 180.0;
 
 pub struct MicPanel {
     handle: Option<MicHandle>,
@@ -31,6 +30,11 @@ pub struct MicPanel {
     next_list: Instant,
     apply_rx: Option<Receiver<Result<String, String>>>,
     status: Option<(bool, String)>,
+    monitor: Option<MicMonitor>,
+    listen: bool,
+    listen_db: f32,
+    selected_band: usize,
+    scene: crate::show::ShowState,
 }
 
 impl Default for MicPanel {
@@ -49,6 +53,11 @@ impl Default for MicPanel {
             next_list: now,
             apply_rx: None,
             status: None,
+            monitor: None,
+            listen: false,
+            listen_db: 0.0,
+            selected_band: 0,
+            scene: crate::show::ShowState::new(crate::show::ShowMode::Off),
         }
     }
 }
@@ -130,9 +139,21 @@ impl MicPanel {
         self.status = Some((true, "Installing mic stack...".into()));
     }
 
+    /// Keep the monitor on the selected mic.
+    fn follow_selection(&mut self) {
+        let id = self.devices.get(self.selected).map(|d| d.id.clone());
+        if self.monitor.as_ref().map(|m| m.endpoint_id().to_string()) != id {
+            self.monitor = id.map(|id| MicMonitor::start(id, self.listen, db_to_gain(self.listen_db)));
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.sync();
         self.poll_devices();
+        self.follow_selection();
+        let live = self.monitor.as_ref().map(|m| m.read());
+        // Keep the analysis moving while the tab is open.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
         let acc = theme::cyan();
         let gate_acc = theme::ok();
         let lim_acc = theme::readable_ink(egui::Color32::from_rgb(255, 120, 120));
@@ -177,6 +198,42 @@ impl MicPanel {
         }
         ui.separator();
 
+        // Live mic (what apps hear) and listen-back
+        let db = |x: f32| if x > 1e-6 { 20.0 * x.log10() } else { -120.0 };
+        if let Some(snap) = &live {
+            match &snap.status {
+                crate::visualizer::Status::Live => {
+                    let frac = ((db(snap.frame.rms) + 60.0) / 60.0).clamp(0.0, 1.0);
+                    ui.horizontal(|ui| {
+                        ui.label("mic ");
+                        ui.add(egui::ProgressBar::new(frac).desired_width(150.0)
+                            .text(format!("{:.0} dB", db(snap.frame.rms))));
+                    });
+                }
+                crate::visualizer::Status::Error(e) => { ui.colored_label(warn, format!("Mic monitor: {e}")); }
+                _ => { ui.small("Connecting to the microphone..."); }
+            }
+        }
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut self.listen, "Listen")
+                .on_hover_text("Play this mic back through your current output, processing included")
+                .changed()
+            {
+                if let Some(m) = &self.monitor { m.set_listen(self.listen); }
+            }
+            let resp = ui.add_enabled(self.listen,
+                egui::Slider::new(&mut self.listen_db, -30.0..=12.0).suffix(" dB").text("volume"));
+            if resp.changed() {
+                if let Some(m) = &self.monitor { m.set_volume(db_to_gain(self.listen_db)); }
+            }
+        });
+        if self.listen {
+            ui.small("Use headphones: speakers will feed back into the mic.");
+        }
+        if let Some(e) = live.as_ref().and_then(|s| s.listen_error.as_ref()) {
+            ui.colored_label(egui::Color32::LIGHT_RED, format!("Listen: {e}"));
+        }
+
         // Meters from the capture APO
         let t = self.telemetry;
         if t.seq == 0 {
@@ -211,18 +268,24 @@ impl MicPanel {
             }
         });
         ui.add_enabled_ui(!s.bypass, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                changed |= knob::knob(ui, &mut s.preamp_db, -24.0..=24.0, "gain", " dB", 1, false, acc);
-            });
-            ui.separator();
 
-            ui.label("Tone");
-            ui.horizontal_wrapped(|ui| {
-                changed |= knob::knob(ui, &mut s.bands[HPF].freq, 20.0..=300.0, "low cut", " Hz", 0, true, acc);
-                changed |= knob::knob(ui, &mut s.bands[MUD].gain, -12.0..=6.0, "mud", " dB", 1, false, acc);
-                changed |= knob::knob(ui, &mut s.bands[PRESENCE].gain, -6.0..=12.0, "presence", " dB", 1, false, acc);
-                changed |= knob::knob(ui, &mut s.bands[AIR].gain, -6.0..=12.0, "air", " dB", 1, false, acc);
+            // The main EQ's curve, over the mic's live spectrum.
+            let (spectrum, peaks, rate) = match &live {
+                Some(l) if l.status == crate::visualizer::Status::Live =>
+                    (&l.frame.spectrum[..], &l.frame.peaks[..], l.rate as f32),
+                _ => (&[][..], &[][..], 48_000.0),
+            };
+            let viz = curve::VizData { layers: curve::Layers::default(), spectrum, peaks,
+                waveform: &[], stereo: &[], loudness: &[], spectro_tex: None };
+            let width = ui.available_width();
+            ui.allocate_ui(egui::vec2(width, CURVE_HEIGHT), |ui| {
+                ui.set_min_size(egui::vec2(width, CURVE_HEIGHT));
+                let r = curve::draw_with_id(ui, &mut s.bands, self.selected_band, rate, false, &viz,
+                    &mut self.scene, None, crate::glstage::Uniforms::default(), "tronteq-mic-node");
+                changed |= r.changed;
+                if let Some(i) = r.selected_band { self.selected_band = i; }
             });
+            changed |= crate::eq_editor::show(ui, &mut s.bands, &mut self.selected_band, &mut s.preamp_db);
             ui.separator();
 
             let mut gate_on = s.gate.enabled != 0;
@@ -278,4 +341,8 @@ fn preset_hint(name: &str) -> &'static str {
         "clean" => "Low cut and limiter only",
         _ => "",
     }
+}
+
+fn db_to_gain(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
 }
