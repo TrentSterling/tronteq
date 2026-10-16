@@ -4451,6 +4451,7 @@ version = "0.13.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde_json",
  "tronteq-shared",
  "windows 0.58.0",
 ]

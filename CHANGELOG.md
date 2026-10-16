@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+- Add the mic stack: a second APO class (`TrontEqMicApo`, same DLL) that runs on
+  one microphone. Chain: gain, 8-band EQ, noise gate, auto-loudness, compressor,
+  limiter. Every app that records that mic in shared mode hears the result,
+  including Axela on the Blue Yeti.
+- Mic settings live in `C:\ProgramData\TrontEq\mic.bin` (the 224-byte output
+  layout plus a 32-byte gate block under the same seqlock). Output sound,
+  profiles, and undo are untouched.
+- Presets: `voice` (speech recognition: soft gate, light compression),
+  `broadcast` (firmer gate and compression), `clean` (low cut and limiter).
+- CLI: `list-devices --mics`, `install-mic`, `uninstall-mic`, and
+  `mic show|preset|bypass|gate|gain|export|import` (no elevation for `mic`).
+  `install-mic` refuses to replace another effect on the mic without `--force`;
+  uninstall only clears mic slots that hold TrontEQ.
+- GUI: a MIC tab with mic picker and install, in/out meters, presets, tone
+  knobs (low cut, mud, presence, air), gate, compressor, and limiter.
+
 ## [0.13.0] - 2026-10-11
 
 - Start in the system tray at Windows sign-in. The normal-user task waits ten

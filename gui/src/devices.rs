@@ -41,17 +41,33 @@ pub fn list() -> Result<Vec<Device>> {
     tronteq_shared::endpoints::list_render_endpoints()
 }
 
+/// Microphones for the mic stack.
+pub fn list_mics() -> Result<Vec<Device>> {
+    tronteq_shared::endpoints::list_capture_endpoints()
+}
+
 /// Apply the full APO recipe to a stable endpoint ID (runs `install --device-id`
 /// ELEVATED — expect one UAC prompt; a declined prompt reads as a friendly error,
 /// not a crash).
 pub fn apply(endpoint_id: &str) -> Result<String> {
+    run_install("install", endpoint_id)
+}
+
+/// Attach the mic stack to a capture endpoint (`install-mic --device-id`,
+/// elevated, same one-UAC flow as outputs).
+pub fn apply_mic(endpoint_id: &str) -> Result<String> {
+    run_install("install-mic", endpoint_id)
+}
+
+fn run_install(subcommand: &str, endpoint_id: &str) -> Result<String> {
     let cli = cli_path()?;
     let _ = std::fs::remove_file(INSTALL_LOG);
-    // cmd /c "<cli>" install --device-id ID > <log> 2>&1; the outer quotes are
-    // cmd's own re-quoting rule for a quoted program path plus redirection.
+    // cmd /c "<cli>" <subcommand> --device-id ID > <log> 2>&1; the outer quotes
+    // are cmd's own re-quoting rule for a quoted program path plus redirection.
     let params = format!(
-        "/c \"\"{}\" install --device-id {} > \"{}\" 2>&1\"",
+        "/c \"\"{}\" {} --device-id {} > \"{}\" 2>&1\"",
         cli.display(),
+        subcommand,
         endpoint_id,
         INSTALL_LOG
     );

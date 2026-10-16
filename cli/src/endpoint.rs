@@ -31,7 +31,7 @@ extern "system" {
     fn InitPropVariantFromCLSID(clsid: *const GUID, ppropvar: *mut PROPVARIANT) -> HRESULT;
 }
 
-pub use tronteq_shared::endpoints::list_render_endpoints;
+pub use tronteq_shared::endpoints::{list_capture_endpoints, list_render_endpoints};
 use tronteq_shared::endpoints::ComGuard;
 
 /// Parse our CLSID into a `GUID`.

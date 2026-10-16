@@ -58,6 +58,26 @@ cargo run -p tronteq-cli -- list-devices
 cargo run -p tronteq-cli -- install --device 0
 ```
 
+## Mic stack (input side)
+
+The same DLL carries a second processor for one microphone: gain, EQ, noise
+gate, compressor, limiter. Anything that records that mic in shared mode
+(Discord, OBS, Axela) hears the processed signal.
+
+```bash
+cargo run -p tronteq-cli -- list-devices --mics
+cargo run -p tronteq-cli -- install-mic --device 0     # elevated, like install
+cargo run -p tronteq-cli -- mic show                   # settings + meters
+cargo run -p tronteq-cli -- mic preset voice           # voice | broadcast | clean
+cargo run -p tronteq-cli -- mic gate on --threshold -45
+cargo run -p tronteq-cli -- uninstall-mic
+```
+
+The GUI's MIC tab does the same with knobs. `voice` is tuned for speech
+recognition, so it gates softly (-24 dB, never to silence) and compresses
+lightly. If a mic already runs a vendor effect, `install-mic` stops and asks for
+`--force`. Windows skips effects on a mic whose "Audio enhancements" are off.
+
 ## Run the GUI
 
 ```bash

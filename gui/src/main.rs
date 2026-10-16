@@ -12,6 +12,7 @@ mod dsp_preview;
 mod glstage;
 mod inspector;
 mod knob;
+mod mic_panel;
 mod presets;
 mod profiler;
 mod profiles;
@@ -317,6 +318,8 @@ struct App {
     /// lives in `theme.rs`'s own static, not here.
     gradient_preset_sync: bool,
     tab: inspector::Tab,
+    /// MIC tab: input-side mic stack, independent of the output sound.
+    mic: mic_panel::MicPanel,
     show: show::ShowState,
     /// Auto-cycle through the GL SHOW modes while one is active.
     show_shuffle: bool,
@@ -657,6 +660,7 @@ impl App {
             modal_focus: false,
             tab: if std::env::args().any(|a| a == "--visualizer") { inspector::Tab::Viz }
                 else { inspector::Tab::from_str(&ui_settings.inspector_tab) },
+            mic: mic_panel::MicPanel::default(),
             show: show::ShowState::new(show::ShowMode::from_str(&ui_settings.show_mode)),
             show_shuffle: ui_settings.show_shuffle,
             viz_settings: {

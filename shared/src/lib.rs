@@ -8,6 +8,7 @@
 
 #[cfg(windows)]
 pub mod endpoints;
+pub mod mic;
 
 use std::fs::OpenOptions;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -236,7 +237,7 @@ impl std::fmt::Display for StateError {
 }
 impl std::error::Error for StateError {}
 
-struct FileGuard<'a> { file: std::sync::MutexGuard<'a, std::fs::File> }
+pub(crate) struct FileGuard<'a> { file: std::sync::MutexGuard<'a, std::fs::File> }
 impl<'a> FileGuard<'a> {
     fn acquire(file: &'a std::sync::Mutex<std::fs::File>, exclusive: bool) -> Result<Self, StateError> {
         let file = match file.try_lock() {
@@ -260,18 +261,28 @@ impl StateHandle {
         Self::open_at(std::path::Path::new(STATE_FILE))
     }
     pub fn open_at(path: &std::path::Path) -> anyhow::Result<Self> {
+        Self::open_layout(path, STATE_BYTES, |ptr| unsafe { publish(ptr, &Snapshot::flat(false), 2) })
+    }
+
+    /// Map `bytes` of `path` (an `EqState` prefix plus any appended block) and
+    /// run `init` on a fresh, never-written file. The mic state uses this with a
+    /// gate block after the telemetry; the output state uses plain `open_at`.
+    pub(crate) fn open_layout(
+        path: &std::path::Path,
+        bytes: usize,
+        init: impl FnOnce(*mut EqState),
+    ) -> anyhow::Result<Self> {
         let file = std::sync::Mutex::new(OpenOptions::new().read(true).write(true).create(true).open(path)?);
         let guard = FileGuard::acquire(&file, true)?;
         let old_len = guard.file.metadata()?.len();
-        if old_len < STATE_BYTES as u64 { guard.file.set_len(STATE_BYTES as u64)?; }
-        let mut mmap = unsafe { MmapOptions::new().len(STATE_BYTES).map_mut(&*guard.file)? };
+        if old_len < bytes as u64 { guard.file.set_len(bytes as u64)?; }
+        let mut mmap = unsafe { MmapOptions::new().len(bytes).map_mut(&*guard.file)? };
         let ptr = mmap.as_mut_ptr() as *mut EqState;
         unsafe {
             let version = (*ptr).version.load(Ordering::Acquire);
             if version == 0 && (*ptr).bands.iter().all(|b| b.freq == 0.0) {
-                let initial = Snapshot::flat(false);
-                publish(ptr, &initial, 2);
-            } else if old_len > 0 && old_len < STATE_BYTES as u64 && version & 1 == 0 {
+                init(ptr);
+            } else if bytes == STATE_BYTES && old_len > 0 && old_len < STATE_BYTES as u64 && version & 1 == 0 {
                 // Old telemetry occupied delay_ms. Migrate only a committed state;
                 // an interrupted legacy file goes through explicit recovery instead.
                 let mut prior = read_snapshot(ptr)?;
@@ -314,16 +325,31 @@ impl StateHandle {
         unsafe { self.replace(expected_version, replacement) }
     }
     unsafe fn replace(&self, expected: u64, replacement: &Snapshot) -> Result<u64, StateError> {
+        self.replace_with(expected, replacement, |_| {})
+    }
+    /// `extra` writes any appended block while the version is odd, so it
+    /// commits together with the core state.
+    pub(crate) unsafe fn replace_with(&self, expected: u64, replacement: &Snapshot, extra: impl FnOnce(*mut EqState)) -> Result<u64, StateError> {
         (*self.ptr).version.compare_exchange(expected, expected | 1, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|actual| StateError::Changed { expected, actual })?;
         let committed = next_even(expected);
+        extra(self.ptr);
         publish(self.ptr, replacement, committed);
         Ok(committed)
     }
+    pub(crate) fn lock(&self, exclusive: bool) -> Result<FileGuard<'_>, StateError> {
+        FileGuard::acquire(&self.file, exclusive)
+    }
+    pub(crate) fn raw(&self) -> *mut EqState { self.ptr }
 }
 
 fn next_even(version: u64) -> u64 { (version | 1).wrapping_add(1).max(2) }
 unsafe fn read_snapshot(ptr: *mut EqState) -> Result<Snapshot, StateError> {
+    read_coherent(ptr, |s| s)
+}
+/// Seqlock read of the core state plus whatever `extra` reads from an appended
+/// block, all inside the same version window.
+pub(crate) unsafe fn read_coherent<T>(ptr: *mut EqState, extra: impl Fn(Snapshot) -> T) -> Result<T, StateError> {
     for attempt in 0..64 {
         let before = (*ptr).version.load(Ordering::Acquire);
         if before & 1 == 0 {
@@ -335,14 +361,15 @@ unsafe fn read_snapshot(ptr: *mut EqState) -> Result<Snapshot, StateError> {
                 dynamics: std::ptr::read_volatile(std::ptr::addr_of!((*ptr).dynamics)),
                 delay_ms: std::ptr::read_volatile(std::ptr::addr_of!((*ptr).delay_ms)),
             };
+            let out = extra(s);
             std::sync::atomic::fence(Ordering::Acquire);
-            if (*ptr).version.load(Ordering::Acquire) == before { return Ok(s); }
+            if (*ptr).version.load(Ordering::Acquire) == before { return Ok(out); }
         }
         if attempt % 8 == 7 { std::thread::yield_now(); } else { std::hint::spin_loop(); }
     }
     Err(StateError::Busy { version: (*ptr).version.load(Ordering::Acquire) })
 }
-unsafe fn publish(ptr: *mut EqState, s: &Snapshot, version: u64) {
+pub(crate) unsafe fn publish(ptr: *mut EqState, s: &Snapshot, version: u64) {
     std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).bands), s.bands);
     std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).preamp_db), s.preamp_db);
     std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).bypass), s.bypass);
