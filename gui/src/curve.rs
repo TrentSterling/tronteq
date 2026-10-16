@@ -71,6 +71,24 @@ pub fn draw(
     gl: Option<&std::sync::Arc<std::sync::Mutex<crate::glstage::GlStage>>>,
     uni: crate::glstage::Uniforms,
 ) -> DrawResponse {
+    draw_with_id(ui, bands, selected_band, sample_rate, rainbow, viz, show, gl, uni, "tronteq-node")
+}
+
+/// `draw` with its own node-id namespace, so a second curve (the MIC tab's)
+/// can share the screen with the main one.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_with_id(
+    ui: &mut egui::Ui,
+    bands: &mut [Band; NUM_BANDS],
+    selected_band: usize,
+    sample_rate: f32,
+    rainbow: bool,
+    viz: &VizData,
+    show: &mut crate::show::ShowState,
+    gl: Option<&std::sync::Arc<std::sync::Mutex<crate::glstage::GlStage>>>,
+    uni: crate::glstage::Uniforms,
+    node_ns: &'static str,
+) -> DrawResponse {
     let avail = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(avail, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -257,7 +275,7 @@ pub fn draw(
         }
 
         let node_rect = Rect::from_center_size(p, Vec2::splat(NODE_HIT_RADIUS * 2.0));
-        let node_resp = ui.interact(node_rect, egui::Id::new(("tronteq-node", i)), Sense::click());
+        let node_resp = ui.interact(node_rect, egui::Id::new((node_ns, i)), Sense::click());
         node_resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, i == selected_band, format!("EQ band {}", i + 1)));
         if node_resp.clicked() || node_resp.secondary_clicked() || node_resp.double_clicked() { selected = Some(i); }
         if node_resp.secondary_clicked() {

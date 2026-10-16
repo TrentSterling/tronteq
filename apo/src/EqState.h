@@ -85,4 +85,29 @@ static_assert(alignof(EqState) == 8, "EqState must be 8-byte aligned for atomic 
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
     "atomic<uint64_t> must be lock-free for seqlock to be RT-safe");
 
+// ---- Mic stack (mic.bin) ----------------------------------------------------
+// Mirror of shared/src/mic.rs. The capture APO maps a 256-byte file: the same
+// EqState as above, then a noise-gate block committed under the same version.
+constexpr std::size_t kMicStateBytes = 256;
+
+struct Gate {
+    uint32_t enabled;
+    float threshold_db;   // opens above this (dBFS, detector peak)
+    float hysteresis_db;  // closes below threshold - hysteresis
+    float range_db;       // attenuation while closed (<= 0)
+    float attack_ms;      // open ramp
+    float hold_ms;        // stay open this long after the level drops
+    float release_ms;     // close ramp
+    uint32_t _reserved;
+};
+static_assert(sizeof(Gate) == 32, "Gate ABI drift - mirror shared/src/mic.rs");
+
+struct MicState {
+    EqState eq;
+    Gate gate;
+};
+static_assert(sizeof(MicState) == kMicStateBytes, "MicState ABI drift - mirror shared/src/mic.rs");
+static_assert(offsetof(MicState, gate) == kStateBytes,
+    "gate must start right after the 224-byte EqState");
+
 } // namespace tronteq

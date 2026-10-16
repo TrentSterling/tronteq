@@ -23,12 +23,12 @@ use windows::Win32::Security::{
 };
 use windows::Win32::System::Threading::OpenProcessToken;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE,
-    KEY_QUERY_VALUE, KEY_SET_VALUE, REG_CREATE_KEY_DISPOSITION, REG_DWORD, REG_OPTION_BACKUP_RESTORE,
-    REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegQueryValueExW, RegSetValueExW, HKEY,
+    HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_CREATE_KEY_DISPOSITION, REG_DWORD,
+    REG_OPTION_BACKUP_RESTORE, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE,
 };
 
-use crate::com_reg::CLSID_STR;
+use crate::com_reg::ApoClass;
 
 // PKEY_FX_EndpointEffectClsid = {d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6 (EFX slot).
 const EFX_VALUE_NAME: &str = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6";
@@ -124,11 +124,11 @@ fn set_dword(key: HKEY, name: &str, value: u32) -> Result<()> {
 
 /// Register the APO in the engine's AudioProcessingObjects store. Mirrors the
 /// metadata Windows' own APOs carry (verified against WMALFXGFXDSP).
-pub fn register_apo() -> Result<()> {
-    let subkey = format!("{APO_STORE}\\{CLSID_STR}");
+pub fn register_apo(class: &ApoClass) -> Result<()> {
+    let subkey = format!("{APO_STORE}\\{}", class.clsid);
     let key = open_hklm(&subkey, REG_OPTION_NON_VOLATILE.0, KEY_SET_VALUE.0)?;
     let res = (|| {
-        set_sz(key, "FriendlyName", "TrontEQ APO")?;
+        set_sz(key, "FriendlyName", class.store_name)?;
         set_sz(key, "Copyright", "Trent Sterling")?;
         set_dword(key, "MajorVersion", 1)?;
         set_dword(key, "MinorVersion", 0)?;
@@ -147,8 +147,8 @@ pub fn register_apo() -> Result<()> {
     res
 }
 
-pub fn unregister_apo() -> Result<()> {
-    let subkey = format!("{APO_STORE}\\{CLSID_STR}");
+pub fn unregister_apo(class: &ApoClass) -> Result<()> {
+    let subkey = format!("{APO_STORE}\\{}", class.clsid);
     let r = unsafe {
         windows::Win32::System::Registry::RegDeleteTreeW(
             HKEY_LOCAL_MACHINE,
@@ -222,10 +222,11 @@ impl Drop for PrivilegeGuard {
     }
 }
 
-fn open_fxproperties(endpoint_reg_guid: &str) -> Result<HKEY> {
+fn open_fxproperties(flow: &str, endpoint_reg_guid: &str) -> Result<HKEY> {
     // The caller holds a PrivilegeGuard (SeBackup/SeRestore) for the duration.
+    // `flow` is one of our own constants ("Render" / "Capture"), never user input.
     let subkey = format!(
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{endpoint_reg_guid}\FxProperties"
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\{flow}\{endpoint_reg_guid}\FxProperties"
     );
     // REG_OPTION_BACKUP_RESTORE + SeBackup/SeRestore opens regardless of the
     // TrustedInstaller ACL, without changing the key's owner.
@@ -236,19 +237,50 @@ fn open_fxproperties(endpoint_reg_guid: &str) -> Result<HKEY> {
     )
 }
 
-/// Point the endpoint's EFX slot at our APO so Windows runs it on that output.
-pub fn set_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
+/// The CLSID currently in an endpoint's EFX slot, if any.
+pub fn endpoint_efx(class: &ApoClass, endpoint_reg_guid: &str) -> Result<Option<String>> {
+    let _priv = PrivilegeGuard::backup_restore()?;
+    let key = open_fxproperties(class.flow, endpoint_reg_guid)?;
+    let res = query_sz(key, EFX_VALUE_NAME);
+    unsafe { let _ = RegCloseKey(key); }
+    res
+}
+
+fn query_sz(key: HKEY, name: &str) -> Result<Option<String>> {
+    let name_w = wide(name);
+    let mut kind = REG_VALUE_TYPE::default();
+    let mut buf = [0u16; 128];
+    let mut len = (buf.len() * 2) as u32;
+    let r = unsafe {
+        RegQueryValueExW(key, PCWSTR(name_w.as_ptr()), None, Some(&mut kind),
+            Some(buf.as_mut_ptr().cast()), Some(&mut len))
+    };
+    if r.0 == 2 {
+        return Ok(None); // ERROR_FILE_NOT_FOUND: slot empty
+    }
+    r.ok().with_context(|| format!("read {name}"))?;
+    if kind != REG_SZ {
+        return Ok(Some(format!("<non-string value type {}>", kind.0)));
+    }
+    let chars = (len as usize / 2).min(buf.len());
+    let text = String::from_utf16_lossy(&buf[..chars]);
+    let text = text.trim_end_matches('\0').to_string();
+    Ok(if text.is_empty() { None } else { Some(text) })
+}
+
+/// Point the endpoint's EFX slot at our APO so Windows runs it on that device.
+pub fn set_endpoint_efx(class: &ApoClass, endpoint_reg_guid: &str) -> Result<()> {
     let _priv = PrivilegeGuard::backup_restore()?; // dropped (disabled) at fn exit
-    let key = open_fxproperties(endpoint_reg_guid)?;
-    let res = set_sz(key, EFX_VALUE_NAME, CLSID_STR);
+    let key = open_fxproperties(class.flow, endpoint_reg_guid)?;
+    let res = set_sz(key, EFX_VALUE_NAME, class.clsid);
     unsafe { let _ = RegCloseKey(key); }
     res.context("write EFX FxProperties value")
 }
 
 /// Remove our APO from the endpoint's EFX slot (restore default behavior).
-pub fn clear_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
+pub fn clear_endpoint_efx(class: &ApoClass, endpoint_reg_guid: &str) -> Result<()> {
     let _priv = PrivilegeGuard::backup_restore()?; // dropped (disabled) at fn exit
-    let key = open_fxproperties(endpoint_reg_guid)?;
+    let key = open_fxproperties(class.flow, endpoint_reg_guid)?;
     let r = unsafe { RegDeleteValueW(key, PCWSTR(wide(EFX_VALUE_NAME).as_ptr())) };
     unsafe { let _ = RegCloseKey(key); }
     // ERROR_FILE_NOT_FOUND (2) means it was already absent.
@@ -256,6 +288,17 @@ pub fn clear_endpoint_efx(endpoint_reg_guid: &str) -> Result<()> {
         bail!("RegDeleteValueW EFX: {:?}", r);
     }
     Ok(())
+}
+
+/// Clear the slot only when it holds `class` — never a vendor's own effect.
+pub fn clear_endpoint_efx_if_ours(class: &ApoClass, endpoint_reg_guid: &str) -> Result<bool> {
+    match endpoint_efx(class, endpoint_reg_guid)? {
+        Some(v) if v.eq_ignore_ascii_case(class.clsid) => {
+            clear_endpoint_efx(class, endpoint_reg_guid)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 // ---- ProgramData ACL + audio service ----------------------------------------

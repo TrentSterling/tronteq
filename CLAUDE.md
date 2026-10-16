@@ -27,6 +27,7 @@ Three artifacts. One IPC file.
 | `apo/` | C++ COM DLL (`TrontEqApo.dll`). Subclasses `CBaseAudioProcessingObject`. RBJ biquads, DF-II-T, FTZ/DAZ. Reads `EqState` from file-backed mmap. |
 | `cli/` | Rust installer. `check` / `list-devices` / `install --device` / `uninstall`. Uses `windows` crate for `IMMDeviceEnumerator` + `IPropertyStore`. |
 | `gui/` | Rust eframe app (glow renderer). Draggable 8-band curve + viz layers (`curve.rs`), tabbed inspector CHAIN/VIZ/SETUP (`inspector.rs`), saved sound profiles (`profiles.rs`, JSON in `C:\ProgramData\TrontEq\profiles\`), persisted UI settings (`settings.rs`, settings.json), knobs/theme/spectrogram/visualizer/devices/tray modules. Writes the state file. Runs Medium (asInvoker) since v0.9.0; spawns tronteq-cli elevated for installs. |
+| mic stack | Same DLL, second class `TrontEqMicApo` `{68FF0293-9E2F-414B-834B-BE2ED82F607E}` on a capture endpoint. Reads `mic.bin`; chain is preamp -> EQ -> gate (`apo/src/Gate.cpp`) -> AGC/comp/limiter, no delay. Rust side: `shared/src/mic.rs` (layout, presets, `MicHandle`), CLI `install-mic` / `mic ...`, GUI `mic_panel.rs` (MIC tab). |
 | `shared/` | Rust crate. `#[repr(C)] EqState` — the IPC contract. **224 bytes** (200 seqlock state + 24 APO-written telemetry). Serde on `Band`/`Dynamics` for profile JSON. Mirrored in `apo/src/EqState.h`. |
 
 ## IPC Contract
@@ -57,6 +58,14 @@ Band {
 Old 144/192-byte files are zero-extended on open; telemetry `seq == 0` means an
 APO build that never wrote it. Sound profiles serialize `bands + preamp_db +
 dynamics` to JSON (`profiles/*.json`) — same structs, separate from this file.
+
+**Mic stack file:** `C:\ProgramData\TrontEq\mic.bin`, 256 bytes: an `EqState`
+(same 224-byte layout, `delay_ms` ignored) followed by `Gate` at offset 224
+(`enabled, threshold_db, hysteresis_db, range_db, attack_ms, hold_ms,
+release_ms, _reserved`). The gate commits under the same seqlock version. The
+capture APO opens it only if it exists; `install-mic` creates it on the `whisper`
+preset. Gate ramps are linear in dB (attack/release = time to fully open/close).
+Portable gate test: `apo/tests/gate_test.cpp`.
 
 **Seqlock protocol:** The writer stages a complete draft, publishes an odd
 version while copying it into the mapping, then commits an even version. The

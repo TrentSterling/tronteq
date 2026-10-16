@@ -11,7 +11,33 @@ use windows::Win32::System::Registry::{
 };
 
 pub const CLSID_STR: &str = "{CA64E60A-A3C4-43B8-970F-0360055172F2}";
-const FRIENDLY_NAME: &str = "TrontEQ Stream Effect APO";
+/// Mic stack class in the same DLL. Mirror of apo/src/Guids.h. Never regenerate.
+pub const MIC_CLSID_STR: &str = "{68FF0293-9E2F-414B-834B-BE2ED82F607E}";
+
+/// One COM class in TrontEqApo.dll and where it attaches.
+pub struct ApoClass {
+    pub clsid: &'static str,
+    /// HKCR friendly name (matches the DLL's own DllRegisterServer).
+    pub friendly: &'static str,
+    /// FriendlyName in the AudioProcessingObjects store.
+    pub store_name: &'static str,
+    /// `Render` or `Capture` under `MMDevices\Audio`.
+    pub flow: &'static str,
+}
+
+pub const OUTPUT: ApoClass = ApoClass {
+    clsid: CLSID_STR,
+    friendly: "TrontEQ Stream Effect APO",
+    store_name: "TrontEQ APO",
+    flow: "Render",
+};
+
+pub const MIC: ApoClass = ApoClass {
+    clsid: MIC_CLSID_STR,
+    friendly: "TrontEQ Mic Stack APO",
+    store_name: "TrontEQ Mic Stack APO",
+    flow: "Capture",
+};
 
 fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
@@ -62,18 +88,19 @@ fn set_string_value(parent: HKEY, subkey: &str, value_name: Option<&str>, value:
     Ok(())
 }
 
-pub fn register_inproc(dll_path: &str) -> Result<()> {
-    let clsid_key = format!("CLSID\\{CLSID_STR}");
-    let inproc_key = format!("CLSID\\{CLSID_STR}\\InprocServer32");
+pub fn register_inproc(class: &ApoClass, dll_path: &str) -> Result<()> {
+    let clsid = class.clsid;
+    let clsid_key = format!("CLSID\\{clsid}");
+    let inproc_key = format!("CLSID\\{clsid}\\InprocServer32");
 
-    set_string_value(HKEY_CLASSES_ROOT, &clsid_key, None, FRIENDLY_NAME)?;
+    set_string_value(HKEY_CLASSES_ROOT, &clsid_key, None, class.friendly)?;
     set_string_value(HKEY_CLASSES_ROOT, &inproc_key, None, dll_path)?;
     set_string_value(HKEY_CLASSES_ROOT, &inproc_key, Some("ThreadingModel"), "Both")?;
     Ok(())
 }
 
-pub fn unregister_inproc() -> Result<()> {
-    let clsid_key = format!("CLSID\\{CLSID_STR}");
+pub fn unregister_inproc(class: &ApoClass) -> Result<()> {
+    let clsid_key = format!("CLSID\\{}", class.clsid);
     let clsid_key_w = to_wide(&clsid_key);
     let r = unsafe { RegDeleteTreeW(HKEY_CLASSES_ROOT, PCWSTR(clsid_key_w.as_ptr())) };
     if r.0 != 0 && r.0 != 2 {

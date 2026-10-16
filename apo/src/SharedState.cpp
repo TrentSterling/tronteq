@@ -5,7 +5,6 @@
 
 namespace tronteq {
 
-static const wchar_t* kStatePath = L"C:\\ProgramData\\TrontEq\\state.bin";
 static constexpr float kDefaultFreqs[kNumBands] = {
     31.25f, 62.5f, 125.0f, 250.0f, 500.0f, 1000.0f, 2000.0f, 4000.0f,
 };
@@ -49,9 +48,10 @@ void SharedStateReader::Close() {
     }
     m_writable = false;
     m_hasDelay = false;
+    m_hasGate = false;
 }
 
-void SharedStateReader::TryOpen() {
+void SharedStateReader::TryOpen(const wchar_t* path, bool withGate) {
     if (IsOpen()) return;
 
     // Prefer read/write so we can publish meter telemetry back to the GUI. Falls
@@ -59,7 +59,7 @@ void SharedStateReader::TryOpen() {
     // still works; only the in/out meter goes dark).
     bool writable = true;
     HANDLE f = CreateFileW(
-        kStatePath,
+        path,
         GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,
@@ -69,7 +69,7 @@ void SharedStateReader::TryOpen() {
     if (f == INVALID_HANDLE_VALUE) {
         writable = false;
         f = CreateFileW(
-            kStatePath,
+            path,
             GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr,
@@ -86,7 +86,9 @@ void SharedStateReader::TryOpen() {
         return;
     }
     const bool telemetryFits = sz.QuadPart >= static_cast<LONGLONG>(kStateBytes);
-    const DWORD mapLen = static_cast<DWORD>(telemetryFits ? kStateBytes : kStateCoreBytes);
+    const bool gateFits = withGate && sz.QuadPart >= static_cast<LONGLONG>(kMicStateBytes);
+    const DWORD mapLen = static_cast<DWORD>(
+        gateFits ? kMicStateBytes : (telemetryFits ? kStateBytes : kStateCoreBytes));
 
     HANDLE m = CreateFileMappingW(f, nullptr,
                                   writable ? PAGE_READWRITE : PAGE_READONLY,
@@ -114,6 +116,7 @@ void SharedStateReader::TryOpen() {
     // float could clamp to a huge spurious delay. Gate the read on the full size so
     // this is code-enforced, not merely deploy-order-enforced.
     m_hasDelay = telemetryFits;
+    m_hasGate = gateFits;
 }
 
 void SharedStateReader::WriteTelemetry(float inPeak, float inRms,
@@ -130,7 +133,7 @@ void SharedStateReader::WriteTelemetry(float inPeak, float inRms,
     t.seq = t.seq + 1;
 }
 
-bool SharedStateReader::Read(EqState& out) const {
+bool SharedStateReader::Read(EqState& out, Gate* gate) const {
     if (!m_view) {
         FillDefault(out);
         return false;
@@ -148,11 +151,16 @@ bool SharedStateReader::Read(EqState& out) const {
         out.bypass = m_view->bypass;
         out.dynamics = m_view->dynamics;
         out.delay_ms = m_hasDelay ? m_view->delay_ms : 0.0f;
+        Gate g{};
+        if (gate && m_hasGate) {
+            std::memcpy(&g, &reinterpret_cast<const MicState*>(m_view)->gate, sizeof(Gate));
+        }
 
         std::atomic_thread_fence(std::memory_order_acquire);
         uint64_t v2 = m_view->version.load(std::memory_order_acquire);
         if (v1 == v2 && v1 != 0) {
             out.version.store(v2, std::memory_order_relaxed);
+            if (gate && m_hasGate) *gate = g;
             return true;
         }
         // else: torn or uninitialized (v==0), retry
