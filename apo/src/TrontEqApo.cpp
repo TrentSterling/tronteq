@@ -14,6 +14,9 @@ namespace tronteq {
 // can be returned from GetEffectsList.
 static const GUID kTrontEqEffectId =
     { 0x9d8c1a32, 0x4f6e, 0x4d21, { 0x9a, 0x77, 0x21, 0x55, 0x0c, 0x33, 0x88, 0x01 } };
+// {69C648B4-33A0-42C4-BCE9-C8902F10ADC3} — the mic stack's effect id.
+static const GUID kTrontEqMicEffectId =
+    { 0x69c648b4, 0x33a0, 0x42c4, { 0xbc, 0xe9, 0xc8, 0x90, 0x2f, 0x10, 0xad, 0xc3 } };
 
 // Registration properties — built once via CRegAPOProperties helper, which
 // handles the variable-length iidAPOInterfaceList tail.
@@ -28,10 +31,32 @@ static const CRegAPOProperties<1> s_regProps(
                           APO_FLAG_FRAMESPERSECOND_MUST_MATCH |
                           APO_FLAG_BITSPERSAMPLE_MUST_MATCH));
 
+static const CRegAPOProperties<1> s_micRegProps(
+    __uuidof(TrontEqMicApo),
+    L"TrontEQ Mic Stack APO",
+    L"TrontEQ",
+    1, 0,
+    __uuidof(IAudioProcessingObject),
+    static_cast<APO_FLAG>(APO_FLAG_INPLACE |
+                          APO_FLAG_SAMPLESPERFRAME_MUST_MATCH |
+                          APO_FLAG_FRAMESPERSECOND_MUST_MATCH |
+                          APO_FLAG_BITSPERSAMPLE_MUST_MATCH));
+
 // ---- ctor/dtor --------------------------------------------------------------
 
 TrontEqApo::TrontEqApo()
-    : CBaseAudioProcessingObject(s_regProps)
+    : TrontEqApo(s_regProps, false)
+{
+}
+
+TrontEqMicApo::TrontEqMicApo()
+    : TrontEqApo(s_micRegProps, true)
+{
+}
+
+TrontEqApo::TrontEqApo(const CRegAPOProperties<1>& regProps, bool mic)
+    : CBaseAudioProcessingObject(regProps)
+    , m_mic(mic)
 {
     for (std::size_t i = 0; i < kNumBands; ++i) {
         m_coeffs[i] = Identity();
@@ -68,7 +93,7 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::GetEffectsList(
         *pcEffects = 0;
         return E_OUTOFMEMORY;
     }
-    *ids = kTrontEqEffectId;
+    *ids = m_mic ? kTrontEqMicEffectId : kTrontEqEffectId;
     *ppEffectsIds = ids;
     *pcEffects = 1;
     return S_OK;
@@ -102,6 +127,7 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::LockForProcess(
     }
     m_coeffsReady = false;
     m_dynamics.Reset(static_cast<double>(m_framesPerSecond > 0 ? m_framesPerSecond : 48000));
+    m_gate.Reset(static_cast<double>(m_framesPerSecond > 0 ? m_framesPerSecond : 48000));
 
     // A/V-sync delay ring: sized for the worst case (kMaxDelayMs) at the real
     // sample rate. Heap allocation is safe here (not the RT thread).
@@ -113,7 +139,12 @@ HRESULT STDMETHODCALLTYPE TrontEqApo::LockForProcess(
         m_delayFramesPrev = 0;
     }
 
-    m_shared.TryOpen(); // open the shared-state mapping now; no per-buffer reopen
+    // Open the shared-state mapping now; no per-buffer reopen.
+    if (m_mic) {
+        m_shared.TryOpen(kMicStatePath, true);
+    } else {
+        m_shared.TryOpen();
+    }
 
     return S_OK;
 }
@@ -195,7 +226,8 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     // glitches all system audio.
     if (m_shared.IsOpen()) {
         EqState tmp;
-        if (m_shared.Read(tmp)) {
+        Gate gate = m_cachedGate;
+        if (m_shared.Read(tmp, m_mic ? &gate : nullptr)) {
             for (std::size_t i = 0; i < kNumBands; ++i) {
                 m_cached.bands[i] = tmp.bands[i];
             }
@@ -203,6 +235,7 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
             m_cached.bypass = tmp.bypass;
             m_cached.dynamics = tmp.dynamics;
             m_cached.delay_ms = tmp.delay_ms;
+            if (m_mic) m_cachedGate = SanitizeGate(gate);
         }
     }
 
@@ -267,6 +300,12 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     }
     const float postEqRms = sampleCount ? static_cast<float>(std::sqrt(postEqSq / sampleCount)) : 0.0f;
 
+    // Mic stack: gate after the EQ (so the high-pass keeps rumble from holding it
+    // open) and before AGC, which would otherwise lift the noise floor.
+    if (m_mic) {
+        m_gate.Process(outBuf, in->u32ValidFrameCount, m_channels, m_cachedGate);
+    }
+
     // Dynamics: AGC -> compressor -> limiter. Clamp params first — they're POD from
     // the shared file and a finite-but-huge makeup/gain would otherwise make +Inf
     // gain (the EQ-stage sanitize runs before this stage, not after).
@@ -321,7 +360,8 @@ void STDMETHODCALLTYPE TrontEqApo::APOProcess(
     // syscalls, no logging. delay_ms == 0 -> skipped entirely (zero-latency path
     // stays byte-for-byte identical).
     const double fs = m_framesPerSecond > 0 ? static_cast<double>(m_framesPerSecond) : 48000.0;
-    float dms = std::isfinite(m_cached.delay_ms) ? m_cached.delay_ms : 0.0f;
+    // No A/V delay on a microphone: it would only add latency to calls.
+    float dms = (!m_mic && std::isfinite(m_cached.delay_ms)) ? m_cached.delay_ms : 0.0f;
     dms = (std::max)(0.0f, (std::min)(kMaxDelayMs, dms));
     uint32_t delayFrames = static_cast<uint32_t>(std::lround(dms / 1000.0f * static_cast<float>(fs)));
     if (m_delayMaxFrames > 0 && delayFrames >= m_delayMaxFrames) {

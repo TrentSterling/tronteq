@@ -32,7 +32,7 @@ call %VS_DEV_CMD% >nul
 pushd "%~dp0"
 if not exist build mkdir build
 
-set SRC=src\TrontEqApo.cpp src\Dll.cpp src\Biquad.cpp src\SharedState.cpp src\Dynamics.cpp
+set SRC=src\TrontEqApo.cpp src\Dll.cpp src\Biquad.cpp src\SharedState.cpp src\Dynamics.cpp src\Gate.cpp
 set OUT=build\TrontEqApo.dll
 set DEF=src\TrontEqApo.def
 

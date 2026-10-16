@@ -16,6 +16,7 @@
 #include "Biquad.h"
 #include "SharedState.h"
 #include "Dynamics.h"
+#include "Gate.h"
 #include "Guids.h"
 
 namespace tronteq {
@@ -61,6 +62,11 @@ public:
                                  UINT32 u32NumOutputConnections,
                                  APO_CONNECTION_PROPERTY** ppOutputConnections) override;
 
+protected:
+    // The mic stack subclass reuses the whole processor with its own
+    // registration, state file (mic.bin), gate stage, and no A/V delay.
+    TrontEqApo(const CRegAPOProperties<1>& regProps, bool mic);
+
 private:
     void RecomputeCoeffsIfDirty(const Band* bands);
     void ProcessBlockFloat32(float* data, UINT32 frames, UINT32 channels, float preGain);
@@ -98,9 +104,27 @@ private:
     bool m_coeffsReady = false;
 
     DynamicsProcessor m_dynamics; // AGC + compressor + limiter, after the EQ
+
+    const bool m_mic;             // capture-side instance (TrontEqMicApo)
+    Gate m_cachedGate{};          // mic only; enabled == 0 until mic.bin says otherwise
+    GateProcessor m_gate;         // mic only: after the EQ, before dynamics
 };
 
 // For use with ATL's OBJECT_ENTRY_AUTO (optional) and CComObject<> factory.
 OBJECT_ENTRY_AUTO(__uuidof(TrontEqApo), TrontEqApo)
+
+// Mic stack: same DSP on a capture endpoint, driven by mic.bin. Its own CLSID
+// so input and output are installed and configured independently.
+class __declspec(uuid("68FF0293-9E2F-414B-834B-BE2ED82F607E"))
+    ATL_NO_VTABLE TrontEqMicApo : public TrontEqApo
+{
+public:
+    TrontEqMicApo();
+
+    // Shadow CComCoClass<TrontEqApo>'s creator so the factory builds this class.
+    DECLARE_AGGREGATABLE(TrontEqMicApo)
+};
+
+OBJECT_ENTRY_AUTO(__uuidof(TrontEqMicApo), TrontEqMicApo)
 
 } // namespace tronteq

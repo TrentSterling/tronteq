@@ -44,8 +44,11 @@ STDAPI DllCanUnloadNow() {
 // ATL's DllRegisterServer uses .rgs script files; we don't want that dependency,
 // so we write the minimal CLSID subkey by hand. InprocServer32 -> DLL path.
 
-static const wchar_t* kClsidText = L"{CA64E60A-A3C4-43B8-970F-0360055172F2}";
-static const wchar_t* kFriendly  = L"TrontEQ Stream Effect APO";
+struct ClassReg { const wchar_t* clsid; const wchar_t* friendly; };
+static const ClassReg kClasses[] = {
+    { L"{CA64E60A-A3C4-43B8-970F-0360055172F2}", L"TrontEQ Stream Effect APO" },
+    { L"{68FF0293-9E2F-414B-834B-BE2ED82F607E}", L"TrontEQ Mic Stack APO" },
+};
 
 static HRESULT SetKeyValue(HKEY root, const wchar_t* subkey,
                            const wchar_t* valueName, const wchar_t* data) {
@@ -66,24 +69,29 @@ STDAPI DllRegisterServer() {
         return HRESULT_FROM_WIN32(GetLastError());
     }
 
-    wchar_t clsidKey[256];
-    swprintf_s(clsidKey, L"CLSID\\%s", kClsidText);
-    wchar_t inprocKey[256];
-    swprintf_s(inprocKey, L"CLSID\\%s\\InprocServer32", kClsidText);
+    for (const ClassReg& c : kClasses) {
+        wchar_t clsidKey[256];
+        swprintf_s(clsidKey, L"CLSID\\%s", c.clsid);
+        wchar_t inprocKey[256];
+        swprintf_s(inprocKey, L"CLSID\\%s\\InprocServer32", c.clsid);
 
-    HRESULT hr;
-    hr = SetKeyValue(HKEY_CLASSES_ROOT, clsidKey, nullptr, kFriendly);
-    if (FAILED(hr)) return hr;
-    hr = SetKeyValue(HKEY_CLASSES_ROOT, inprocKey, nullptr, modulePath);
-    if (FAILED(hr)) return hr;
-    hr = SetKeyValue(HKEY_CLASSES_ROOT, inprocKey, L"ThreadingModel", L"Both");
-    return hr;
+        HRESULT hr;
+        hr = SetKeyValue(HKEY_CLASSES_ROOT, clsidKey, nullptr, c.friendly);
+        if (FAILED(hr)) return hr;
+        hr = SetKeyValue(HKEY_CLASSES_ROOT, inprocKey, nullptr, modulePath);
+        if (FAILED(hr)) return hr;
+        hr = SetKeyValue(HKEY_CLASSES_ROOT, inprocKey, L"ThreadingModel", L"Both");
+        if (FAILED(hr)) return hr;
+    }
+    return S_OK;
 }
 
 STDAPI DllUnregisterServer() {
-    wchar_t clsidKey[256];
-    swprintf_s(clsidKey, L"CLSID\\%s", kClsidText);
-    LSTATUS r = RegDeleteTreeW(HKEY_CLASSES_ROOT, clsidKey);
-    if (r == ERROR_SUCCESS || r == ERROR_FILE_NOT_FOUND) return S_OK;
-    return HRESULT_FROM_WIN32(r);
+    for (const ClassReg& c : kClasses) {
+        wchar_t clsidKey[256];
+        swprintf_s(clsidKey, L"CLSID\\%s", c.clsid);
+        LSTATUS r = RegDeleteTreeW(HKEY_CLASSES_ROOT, clsidKey);
+        if (r != ERROR_SUCCESS && r != ERROR_FILE_NOT_FOUND) return HRESULT_FROM_WIN32(r);
+    }
+    return S_OK;
 }

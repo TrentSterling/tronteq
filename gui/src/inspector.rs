@@ -1,5 +1,5 @@
 //! Tabbed right-side inspector: CHAIN (signal chain), VIZ (analyze layers),
-//! SETUP (output device, zoom, resets, readouts). Takes `&mut App` — App lives
+//! MIC (input-side mic stack, `mic_panel.rs`), SETUP (output device, zoom, resets, readouts). Takes `&mut App` — App lives
 //! in the crate root, so this module reads its fields and calls its methods
 //! directly. Interactive state is mutated through Copy locals inside the panel
 //! closure and written back after it closes (the proven main.rs pattern).
@@ -15,6 +15,7 @@ use crate::{knob, presets, profiler, profiles, theme, App};
 pub enum Tab {
     Chain,
     Viz,
+    Mic,
     Data,
     Setup,
 }
@@ -26,6 +27,7 @@ impl Tab {
     pub fn from_str(s: &str) -> Tab {
         match s {
             "viz" => Tab::Viz,
+            "mic" => Tab::Mic,
             "data" => Tab::Data,
             "setup" => Tab::Setup,
             _ => Tab::Chain,
@@ -35,6 +37,7 @@ impl Tab {
         match self {
             Tab::Chain => "chain",
             Tab::Viz => "viz",
+            Tab::Mic => "mic",
             Tab::Data => "data",
             Tab::Setup => "setup",
         }
@@ -71,6 +74,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut tab, Tab::Chain, "CHAIN");
                 ui.selectable_value(&mut tab, Tab::Viz, "VIZ");
+                ui.selectable_value(&mut tab, Tab::Mic, "MIC");
                 ui.selectable_value(&mut tab, Tab::Data, "DATA");
                 ui.selectable_value(&mut tab, Tab::Setup, "SETUP");
             });
@@ -115,6 +119,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             });
                         },
                         Tab::Viz => unreachable!(),
+                        Tab::Mic => app.mic.show(ui),
                         Tab::Data => data_tab(ui, app),
                         Tab::Setup => setup_tab(
                             ui,

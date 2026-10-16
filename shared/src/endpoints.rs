@@ -1,10 +1,11 @@
-//! Read-only Windows output enumeration, shared by the GUI and installer.
+//! Read-only Windows output and input enumeration, shared by the GUI and installer.
 //! Listing devices must not depend on the installer executable being present.
 
 use anyhow::{Context, Result};
 use windows::core::{BSTR, GUID};
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    eCapture, eConsole, eRender, EDataFlow, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+    DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
@@ -57,18 +58,27 @@ fn device_id(device: &IMMDevice) -> Result<String> {
 }
 
 pub fn list_render_endpoints() -> Result<Vec<Endpoint>> {
+    list_endpoints(eRender)
+}
+
+/// Active microphones / line inputs, for the mic stack.
+pub fn list_capture_endpoints() -> Result<Vec<Endpoint>> {
+    list_endpoints(eCapture)
+}
+
+fn list_endpoints(flow: EDataFlow) -> Result<Vec<Endpoint>> {
     let _com = ComGuard::new()?;
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .context("IMMDeviceEnumerator")?;
-        let default_id = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)
+        let default_id = enumerator.GetDefaultAudioEndpoint(flow, eConsole)
             .ok().and_then(|d| device_id(&d).ok());
-        let collection = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+        let collection = enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)
             .context("EnumAudioEndpoints")?;
         let mut devices = Vec::new();
-        for i in 0..collection.GetCount().context("output count")? {
-            let device = collection.Item(i).context("output device")?;
+        for i in 0..collection.GetCount().context("device count")? {
+            let device = collection.Item(i).context("audio device")?;
             let id = device_id(&device)?;
             let friendly_name = device.OpenPropertyStore(STGM_READ)
                 .and_then(|props| props.GetValue(&FRIENDLY_NAME))

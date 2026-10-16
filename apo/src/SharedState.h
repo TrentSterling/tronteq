@@ -7,6 +7,9 @@
 
 namespace tronteq {
 
+constexpr const wchar_t* kStatePath = L"C:\\ProgramData\\TrontEq\\state.bin";
+constexpr const wchar_t* kMicStatePath = L"C:\\ProgramData\\TrontEq\\mic.bin";
+
 class SharedStateReader {
 public:
     SharedStateReader();
@@ -15,15 +18,18 @@ public:
     SharedStateReader(const SharedStateReader&) = delete;
     SharedStateReader& operator=(const SharedStateReader&) = delete;
 
-    // Try to open C:\ProgramData\TrontEq\state.bin. Succeeds silently if the file
-    // is absent; the APO will fall back to a flat-bypass state until the GUI
-    // (or CLI) creates the file.
-    void TryOpen();
+    // Try to open C:\ProgramData\TrontEq\state.bin (or mic.bin for the capture
+    // APO, mapping its gate block too). Succeeds silently if the file is absent;
+    // the APO will fall back to a flat-bypass state until the GUI (or CLI)
+    // creates the file.
+    void TryOpen(const wchar_t* path = kStatePath, bool withGate = false);
     void Close();
 
     // Seqlock read into `out`. On torn read (or no file), fills with defaults.
     // Return true if state came from the file, false if defaults were used.
-    bool Read(EqState& out) const;
+    // With `gate`, also copies the mic gate block inside the same seqlock window
+    // (left untouched when the file has no gate block).
+    bool Read(EqState& out, Gate* gate = nullptr) const;
 
     // Publish meter levels back to the GUI. No-op unless the mapping is writable
     // (file opened RW + full-size). RT-safe: plain memory writes, no syscalls.
@@ -38,6 +44,7 @@ private:
     bool m_writable = false; // true when telemetry can be written back
     bool m_hasDelay = false; // true only for a full 224-byte file (delay_ms is real,
                              // not stale bytes from a pre-delay 216-byte state.bin)
+    bool m_hasGate = false;  // true only for a full 256-byte mic.bin
 };
 
 // Populate `out` with flat bands at the POC default frequencies + bypass on.
