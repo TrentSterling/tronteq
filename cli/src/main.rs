@@ -72,7 +72,7 @@ enum Command {
 enum MicAction {
     /// Print the current mic chain and meter levels.
     Show,
-    /// Load a built-in preset: voice (speech recognition), broadcast, clean.
+    /// Load a built-in preset: whisper (speech recognition), voice, broadcast, clean.
     Preset { name: String },
     /// Turn the whole mic chain off (pass-through) or back on.
     Bypass {
@@ -262,7 +262,7 @@ fn cmd_install(class: &ApoClass, device_idx: Option<usize>, device_id: Option<&s
     println!("[ok]  audio service restarted");
     println!();
     if mic {
-        println!("Programs that open \"{target_name}\" now hear the mic stack (voice preset).");
+        println!("Programs that open \"{target_name}\" now hear the mic stack (whisper preset).");
         println!("Change it with `tronteq-cli mic preset broadcast` or the MIC tab. If nothing");
         println!("changes, turn \"Audio enhancements\" on for this mic in Sound settings and");
         println!("disable + re-enable it once.");

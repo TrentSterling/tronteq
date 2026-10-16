@@ -272,7 +272,8 @@ impl MicPanel {
 
 fn preset_hint(name: &str) -> &'static str {
     match name {
-        "voice" => "Speech recognition (Axela): soft gate, light compression",
+        "whisper" => "Speech recognition (Axela): low cut, slow soft gate, no compression",
+        "voice" => "Listeners: tone shaping, soft gate, light compression",
         "broadcast" => "Streaming and calls: firmer gate and compression",
         "clean" => "Low cut and limiter only",
         _ => "",

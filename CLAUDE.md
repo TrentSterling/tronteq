@@ -63,7 +63,7 @@ dynamics` to JSON (`profiles/*.json`) — same structs, separate from this file.
 (same 224-byte layout, `delay_ms` ignored) followed by `Gate` at offset 224
 (`enabled, threshold_db, hysteresis_db, range_db, attack_ms, hold_ms,
 release_ms, _reserved`). The gate commits under the same seqlock version. The
-capture APO opens it only if it exists; `install-mic` creates it on the `voice`
+capture APO opens it only if it exists; `install-mic` creates it on the `whisper`
 preset. Gate ramps are linear in dB (attack/release = time to fully open/close).
 Portable gate test: `apo/tests/gate_test.cpp`.
 

@@ -78,7 +78,7 @@ pub struct MicSettings {
 
 impl Default for MicSettings {
     fn default() -> Self {
-        preset("voice").expect("voice preset")
+        preset("whisper").expect("whisper preset")
     }
 }
 
@@ -115,10 +115,11 @@ impl MicSettings {
     }
 }
 
-/// Built-in starting points. `voice` is tuned for speech recognition (Axela /
-/// Whisper): gentle cleanup, a soft gate that never chops word onsets, and
-/// light compression. `broadcast` is the tighter streaming sound.
-pub const PRESETS: [&str; 3] = ["voice", "broadcast", "clean"];
+/// Built-in starting points. `whisper` (the default) is for speech recognition
+/// (Axela on the Yeti): low cut, a small trim for a hot mic, a slow soft gate
+/// that never clips word onsets, and no compression. `voice` adds tone and light
+/// compression for people listening; `broadcast` is the tighter streaming sound.
+pub const PRESETS: [&str; 4] = ["whisper", "voice", "broadcast", "clean"];
 
 pub fn preset(name: &str) -> Option<MicSettings> {
     let band = |freq: f32, gain: f32, q: f32, kind: BandKind| Band { freq, gain, q, kind: kind as u32 };
@@ -135,6 +136,13 @@ pub fn preset(name: &str) -> Option<MicSettings> {
     let mut dynamics = Dynamics::default_passive();
     dynamics.limiter_ceiling_db = -1.0;
     let settings = match name {
+        "whisper" => {
+            // Whisper wants an untouched spectrum and natural dynamics; the Yeti
+            // already peaks hot (speech RMS 0.15 to 0.4), so trim rather than boost.
+            let gate = Gate { enabled: 1, threshold_db: -50.0, range_db: -18.0, attack_ms: 5.0,
+                hold_ms: 250.0, release_ms: 300.0, ..Gate::default() };
+            MicSettings { bypass: false, preamp_db: -3.0, bands: tone(0.0, 0.0, 0.0), gate, dynamics }
+        }
         "voice" => {
             dynamics.comp_enabled = 1;
             dynamics.comp_threshold_db = -24.0;
@@ -243,15 +251,18 @@ mod tests {
             p.validate().unwrap_or_else(|e| panic!("{name}: {e}"));
         }
         assert!(preset("nope").is_none());
-        assert_eq!(MicSettings::default(), preset("voice").unwrap());
+        assert_eq!(MicSettings::default(), preset("whisper").unwrap());
+        let w = preset("whisper").unwrap();
+        assert_eq!(w.dynamics.comp_enabled, 0); // no compression for speech recognition
+        assert!(w.preamp_db < 0.0 && w.gate.release_ms >= 200.0);
     }
 
     #[test]
-    fn fresh_file_starts_on_voice_preset() {
+    fn fresh_file_starts_on_whisper_preset() {
         let p = temp_path("init");
         let h = MicHandle::open_at(&p).unwrap();
         assert_eq!(std::fs::metadata(&p).unwrap().len(), MIC_STATE_BYTES as u64);
-        assert_eq!(h.snapshot().unwrap(), preset("voice").unwrap());
+        assert_eq!(h.snapshot().unwrap(), preset("whisper").unwrap());
         drop(h);
         let _ = std::fs::remove_file(&p);
     }

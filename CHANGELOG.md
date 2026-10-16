@@ -9,8 +9,10 @@
 - Mic settings live in `C:\ProgramData\TrontEq\mic.bin` (the 224-byte output
   layout plus a 32-byte gate block under the same seqlock). Output sound,
   profiles, and undo are untouched.
-- Presets: `voice` (speech recognition: soft gate, light compression),
-  `broadcast` (firmer gate and compression), `clean` (low cut and limiter).
+- Presets: `whisper` (default; speech recognition: low cut, -3 dB trim, slow
+  soft gate, no compression), `voice` (tone and light compression for
+  listeners), `broadcast` (firmer gate and compression), `clean` (low cut and
+  limiter).
 - CLI: `list-devices --mics`, `install-mic`, `uninstall-mic`, and
   `mic show|preset|bypass|gate|gain|export|import` (no elevation for `mic`).
   `install-mic` refuses to replace another effect on the mic without `--force`;
