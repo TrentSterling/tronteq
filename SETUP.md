@@ -24,10 +24,10 @@ the *same* elevated pass and asks for exactly **one** reboot.
 
 ## Prebuilt fast path
 
-1. Get the bundle onto the machine. **Easiest: pull it from the GitHub
-   release** (needs read access to the private repo, and `gh auth login`):
+1. Download `TrontEQ.zip` from the [latest public Windows release](https://github.com/TrentSterling/tronteq/releases/latest)
+   and extract it. With GitHub CLI installed, you can also use:
    ```powershell
-   gh release download v0.8.0 -R TrentSterling/tronteq
+   gh release download -R TrentSterling/tronteq -p TrontEQ.zip
    Expand-Archive .\TrontEQ.zip -DestinationPath .\TrontEQ
    cd .\TrontEQ
    ```
@@ -76,6 +76,14 @@ the *same* elevated pass and asks for exactly **one** reboot.
 
 Re-running `bootstrap.ps1` at any point is safe — it detects what's already
 done and skips it (see "Idempotency" below).
+
+### Updating an existing installation
+
+Quit TrontEQ from its tray menu, extract the new ZIP, and run
+`install-user-startup.ps1` from the extracted folder to replace the per-user
+GUI and CLI and refresh its shortcut/startup task. Sound profiles and visual
+settings remain in `C:\ProgramData\TrontEq`. For first-time audio setup or a
+release that changes the audio processor, use `Install TrontEQ.cmd` instead.
 
 ---
 

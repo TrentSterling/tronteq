@@ -3,7 +3,7 @@ resolver = "2"
 members = ["shared", "cli", "gui", "uitest"]
 
 [workspace.package]
-version = "0.18.0"
+version = "0.18.5"
 edition = "2021"
 authors = ["Trent Sterling"]
 license = "MIT"
@@ -24,6 +24,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
     "Win32_Media_KernelStreaming",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_System_Variant",

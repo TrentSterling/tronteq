@@ -8,7 +8,7 @@ No VB-Cable. No Equalizer APO. No drivers. Our code, our install, our stack.
 
 POC. See `CLAUDE.md` for architecture and `CHANGELOG.md` for what shipped.
 
-The local 0.16.0 visualizer includes musical parameter routing, Intensity ranges,
+The 0.18.5 visualizer includes musical parameter routing, Intensity ranges,
 12 complete factory looks, Flame variations and Stereo sculpture. Under VIZ,
 Style exposes scene controls. Perform adds a two-deck mixer, pads, mutation and
 a beat-based setlist. Effects holds reusable racks and flash controls. More >

@@ -258,3 +258,38 @@ pub fn edge_resize(ctx: &egui::Context) {
             });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_zoomed_chrome_settles_without_continuous_repaints() {
+        for (width, height, zoom) in [(1000.0, 460.0, 1.0), (1000.0, 460.0, 2.3), (640.0, 300.0, 2.3)] {
+            let ctx = egui::Context::default();
+            ctx.set_zoom_factor(zoom);
+            let mut immediate = 0;
+            let mut causes = Vec::new();
+            for tick in 0..120 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width / zoom, height / zoom))),
+                    time: Some(tick as f64 / 60.0),
+                    ..Default::default()
+                };
+                let output = ctx.run(raw, |ctx| {
+                    egui::TopBottomPanel::top("toolbar").show(ctx, |ui| { ui.label("TrontEQ"); });
+                    caption_overlay(ctx);
+                    edge_resize(ctx);
+                    egui::TopBottomPanel::bottom("meter").show(ctx, |ui| { ui.label("OUT"); });
+                    egui::SidePanel::right("inspector").default_width(290.0).show(ctx, |ui| { ui.label("CHAIN"); });
+                    egui::CentralPanel::default().show(ctx, |ui| { ui.label("EQ"); });
+                });
+                if tick > 30 && output.viewport_output[&egui::ViewportId::ROOT].repaint_delay.is_zero() {
+                    immediate += 1;
+                    causes = ctx.repaint_causes();
+                }
+            }
+            assert_eq!(immediate, 0, "idle chrome at {width}x{height}, zoom {zoom} kept repainting: {causes:?}");
+        }
+    }
+}

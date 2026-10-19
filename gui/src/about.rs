@@ -1,9 +1,54 @@
 //! The About window. Extracted from `main.rs`; takes only the fields it needs
 //! (the open flag + the lazily-loaded face texture) rather than all of `App`.
 
+use std::sync::OnceLock;
+use std::time::UNIX_EPOCH;
+
 use eframe::egui;
 
 use crate::theme;
+
+/// `(exe path, file modified time)` of the running binary.
+///
+/// The stale-build lesson from the theme audit: an old install can pass for
+/// the current one for days when nothing in the UI says which executable is
+/// running. Read from the exe itself rather than baked in by `build.rs`, whose
+/// timestamp would go stale across incremental builds. Cached because About
+/// repaints every frame while open.
+fn binary_identity() -> &'static (String, String) {
+    static ID: OnceLock<(String, String)> = OnceLock::new();
+    ID.get_or_init(|| {
+        let exe = std::env::current_exe().ok();
+        let path = exe
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "unknown".into());
+        let modified = exe
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| format_utc(d.as_secs()))
+            .unwrap_or_else(|| "unknown".into());
+        (path, modified)
+    })
+}
+
+/// `YYYY-MM-DD HH:MM UTC` from Unix seconds (Hinnant's civil-from-days; no
+/// date crate in this app).
+fn format_utc(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3_600, rem % 3_600 / 60)
+}
 
 /// Lazy-load the app icon (bars-over-face) as a texture. Shared by the About
 /// window and the toolbar wordmark.
@@ -69,6 +114,13 @@ pub fn show(
                 ui.label(
                     egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(theme::muted()),
                 );
+                let (exe_path, exe_modified) = binary_identity();
+                ui.label(
+                    egui::RichText::new(format!("Binary modified {exe_modified}"))
+                        .color(theme::muted())
+                        .small(),
+                );
+                ui.label(egui::RichText::new(exe_path).color(theme::muted()).small());
                 ui.add_space(8.0);
                 ui.label("Zero-latency Windows system EQ + dynamics");
                 ui.label(
@@ -147,4 +199,18 @@ pub fn show(
         about_open = false;
     }
     *show_about = about_open;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_utc;
+
+    #[test]
+    fn utc_formatter_matches_known_instants() {
+        assert_eq!(format_utc(0), "1970-01-01 00:00 UTC");
+        assert_eq!(format_utc(951_782_400), "2000-02-29 00:00 UTC"); // leap day
+        assert_eq!(format_utc(1_000_000_000), "2001-09-09 01:46 UTC");
+        assert_eq!(format_utc(1_700_000_000), "2023-11-14 22:13 UTC");
+        assert_eq!(format_utc(2_147_483_647), "2038-01-19 03:14 UTC");
+    }
 }

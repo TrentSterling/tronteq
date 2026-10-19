@@ -157,18 +157,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let preview_only = args.iter().any(|a| a == "--preview-only");
     let thumbnails_only = args.iter().any(|a| a == "--thumbnails-only");
     let live_gauntlet = args.iter().any(|a| a == "--live-gauntlet");
+    let restore_only = args.iter().any(|a| a == "--restore-only");
+    let render_only = args.iter().any(|a| a == "--render-only");
     eframe::run_native(
         "TrontEQ isolated audit",
         options,
         Box::new(move |cc| {
-            let result = if live_gauntlet {
+            let result = if restore_only {
+                unsafe { probe_restore(cc.gl.as_ref().expect("GL context")) }
+            } else if live_gauntlet {
                 unsafe { gauntlet::run(cc.gl.as_ref().expect("GL context").clone()) }
                     .map_err(|e| format!("{e:#}"))
             } else if thumbnails_only {
                 unsafe { thumbnails::render(cc.gl.as_ref().expect("GL context")) }
             } else {
                 (if preview_only { Ok(()) } else { unsafe { probe_gl(cc.gl.as_ref().expect("GL context")) } })
-                    .and_then(|_| unsafe { preview::render(cc.gl.as_ref().unwrap().clone()) })
+                    .and_then(|_| if render_only { Ok(()) } else { unsafe { preview::render(cc.gl.as_ref().unwrap().clone()) } })
             };
             match result {
                 Ok(()) => std::process::exit(0),
@@ -179,6 +183,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }),
     )?;
+    Ok(())
+}
+
+/// Exercise the production render path without opening the installed UI or
+/// touching its settings. Include the reported heavy nine-effect, 2x-speed case.
+unsafe fn probe_restore(gl: &glow::Context) -> Result<(), String> {
+    let (w, h) = (1920, 1080);
+    let tex = gl.create_texture()?;
+    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+    gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0,
+        glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+    let fbo = gl.create_framebuffer()?;
+    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
+        glow::TEXTURE_2D, Some(tex), 0);
+    assert_eq!(gl.check_framebuffer_status(glow::FRAMEBUFFER), glow::FRAMEBUFFER_COMPLETE);
+    let mut u = Uniforms { mode: GlMode::Warp, speed: 2.0, render_scale: 0.5,
+        bass: 0.7, mid: 0.5, treble: 0.4, loud: 0.7, fx_count: 9, ..Default::default() };
+    u.fx_order[..9].copy_from_slice(&[FX_ABERRATION, FX_GRAIN, FX_STROBE, FX_EDGEGLOW,
+        FX_THERMAL, FX_ZOOMBLUR, FX_HALFTONE, FX_SCANLINES, FX_MIRROR]);
+    u.spec.fill(0.4);
+    let paint = |stage: &mut GlStage, input: &Uniforms, elapsed: f32| {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.scissor(0, 0, w, h);
+        let start = Instant::now();
+        stage.paint_elapsed(gl, input, [0, 0, w, h], elapsed);
+        gl.finish(); // Only the isolated probe waits for GPU completion.
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        let mut pixels = vec![0; (w*h*4) as usize];
+        gl.read_pixels(0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(&mut pixels)));
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+        (pixels, ms)
+    };
+    let mut batched = GlStage::new(gl)?;
+    let mut reference = GlStage::new(gl)?;
+    paint(&mut batched, &u, 0.0);
+    paint(&mut reference, &u, 0.0);
+    let (batch, batch_ms) = paint(&mut batched, &u, 0.05);
+    let mut sequential = vec![];
+    let mut sequential_ms = 0.0;
+    for _ in 0..6 {
+        let (pixels, ms) = paint(&mut reference, &u, 1.0 / 120.0);
+        sequential = pixels;
+        sequential_ms += ms;
+    }
+    assert_eq!(batch, sequential, "one final effect stack must match six full stacks exactly");
+    println!("6 simulation steps / 9 effects: final pixels identical; batch {batch_ms:.3} ms, six full passes {sequential_ms:.3} ms");
+    for gap in [1.0, 3600.0, 259200.0] {
+        batched.pause_clock();
+        reference.pause_clock();
+        let (restored, ms) = paint(&mut batched, &u, live_frame_seconds(gap));
+        let (expected, _) = paint(&mut reference, &u, 1.0/60.0);
+        assert_eq!(restored, expected, "hidden time was replayed after {gap} seconds");
+        assert!(ms < 250.0, "restored GPU pass stalled: {ms:.3} ms");
+        for _ in 0..5 {
+            assert_eq!(paint(&mut batched, &u, 1.0/60.0).0,
+                paint(&mut reference, &u, 1.0/60.0).0, "restore left timing debt");
+        }
+        println!("Restore after {gap:.0}s: {ms:.3} ms; no timing debt in following frames");
+    }
+    batched.destroy(gl);
+    reference.destroy(gl);
+    gl.delete_framebuffer(fbo);
+    gl.delete_texture(tex);
+    println!("RESTORE RENDER CHECKS PASSED");
     Ok(())
 }
 

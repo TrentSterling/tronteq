@@ -381,6 +381,11 @@ pub const HARMONY_RULES: [&str; 7] = [
 /// every known rule returns five colors, an unknown rule returns just the base.
 pub fn generate_harmony(base: Hsl, rule: &str) -> Vec<Hsl> {
     let Hsl { h, s, l } = base;
+    // `rgb_to_hsl` reports hue 0 for every achromatic colour, so a saturation
+    // BOOST on a gray/black/white base would read that placeholder zero as red
+    // and hand back a reddish peg nobody asked for. Subtractions are already
+    // safe (they clamp at 0); only the boosts need the guard.
+    let s_up = |d: f32| if s > 0.5 { s + d } else { s };
     match rule {
         "Analogous" => vec![
             clamp_hsl(h, s, l),
@@ -392,16 +397,16 @@ pub fn generate_harmony(base: Hsl, rule: &str) -> Vec<Hsl> {
         "Monochromatic" => vec![
             clamp_hsl(h, s, l),
             clamp_hsl(h, s - 20.0, l + 20.0),
-            clamp_hsl(h, s + 10.0, l - 15.0),
+            clamp_hsl(h, s_up(10.0), l - 15.0),
             clamp_hsl(h, s - 30.0, l + 30.0),
-            clamp_hsl(h, s + 20.0, l - 25.0),
+            clamp_hsl(h, s_up(20.0), l - 25.0),
         ],
         "Complementary" => vec![
             clamp_hsl(h, s, l),
             clamp_hsl(h + 180.0, s, l),
             clamp_hsl(h, s - 15.0, l + 20.0),
             clamp_hsl(h + 180.0, s - 15.0, l + 20.0),
-            clamp_hsl(h + 180.0, s + 10.0, l - 10.0),
+            clamp_hsl(h + 180.0, s_up(10.0), l - 10.0),
         ],
         "Split Comp." => vec![
             clamp_hsl(h, s, l),
@@ -1067,6 +1072,33 @@ mod tests {
                 assert!((0.0..=100.0).contains(&c.l));
             }
         }
+    }
+
+    /// THE HUE-0 TRAP. A black, white or gray base has hue 0 as a placeholder;
+    /// no harmony rule may add saturation to it, or the "colorless" accent
+    /// grows reddish pegs (Monochromatic and Complementary used to).
+    #[test]
+    fn harmony_of_an_achromatic_base_stays_achromatic() {
+        for rgb in [[0, 0, 0], [128, 128, 128], [255, 255, 255]] {
+            let base = rgb_to_hsl(rgb);
+            assert_eq!(base.s, 0.0, "{rgb:?} should be achromatic");
+            for rule in HARMONY_RULES {
+                for (i, c) in generate_harmony(base, rule).iter().enumerate() {
+                    assert_eq!(c.s, 0.0, "{rule} peg {i} gained saturation from {rgb:?}");
+                    let [r, g, b] = hsl_to_rgb(c.h, c.s, c.l);
+                    assert!(r == g && g == b, "{rule} peg {i} is tinted for {rgb:?}: {r},{g},{b}");
+                }
+            }
+        }
+    }
+
+    /// The guard must not dull real colors: a chromatic base still gets the
+    /// documented boosts.
+    #[test]
+    fn harmony_of_a_chromatic_base_still_boosts_saturation() {
+        let base = rgb_to_hsl([200, 50, 90]);
+        let mono = generate_harmony(base, "Monochromatic");
+        assert!(mono[2].s > base.s || base.s >= 100.0, "Monochromatic peg 2 should boost");
     }
 
     #[test]

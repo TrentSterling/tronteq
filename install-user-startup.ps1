@@ -14,6 +14,18 @@ foreach ($name in @('tronteq.exe', 'tronteq-cli.exe')) {
 $installedGui = Join-Path $install 'tronteq.exe'
 $running = Get-Process -Name tronteq -ErrorAction SilentlyContinue
 if ($running) { throw 'Quit TrontEQ from its tray menu before updating the installed copy.' }
+# Receipt of which build replaces which. An old exe left in target/release can
+# be installed without anyone noticing; this line (and the About window's exe
+# path + modified time) is how you tell. Log only, it never blocks the install.
+function Get-ExeVersion([string]$Path) {
+    if (!(Test-Path -LiteralPath $Path)) { return 'none' }
+    $v = (Get-Item -LiteralPath $Path).VersionInfo.FileVersion
+    if ([string]::IsNullOrWhiteSpace($v)) { return 'unknown' }
+    return $v
+}
+$incomingGui = Join-Path $release 'tronteq.exe'
+$incomingBuilt = (Get-Item -LiteralPath $incomingGui).LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+Write-Output "installed v$(Get-ExeVersion $installedGui) -> incoming v$(Get-ExeVersion $incomingGui) (built $incomingBuilt, $incomingGui)"
 New-Item -ItemType Directory -Path $install -Force | Out-Null
 foreach ($name in @('tronteq.exe', 'tronteq-cli.exe')) {
     Copy-Item -LiteralPath (Join-Path $release $name) -Destination (Join-Path $install $name) -Force

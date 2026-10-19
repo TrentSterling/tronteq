@@ -152,6 +152,10 @@ fn main() -> Result<()> {
     install_crash_logger();
     log_line(&format!("start pid={} main tid={}", std::process::id(), tid()));
     let startup = std::env::args().any(|arg| arg == "--startup");
+    // Diagnostics apply only to the explicitly requested launch. A marker left
+    // beside the installed executable used to silently disable every later run.
+    let controls_only = std::env::args().any(|arg| arg == "--controls-only");
+    if controls_only { log_line("controls-only: visualizer and loopback capture disabled for this launch"); }
 
     // Single instance: own the port, or hand the request to whoever does.
     let listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, SHOW_PORT)) {
@@ -215,6 +219,10 @@ fn main() -> Result<()> {
         // can't silently flip back to wgpu if the wgpu feature is ever re-added (with
         // both features on, Renderer::default() resolves to Wgpu).
         renderer: eframe::Renderer::Glow,
+        // Use the application heartbeat for pacing. eframe's cpu_usage excludes
+        // SwapBuffers, so the overlay alone cannot diagnose driver-side waits.
+        // Disabling vsync reduced CPU use but did not resolve PC1's desktop lag.
+        vsync: false,
         ..Default::default()
     };
     let run = eframe::run_native(
@@ -222,7 +230,7 @@ fn main() -> Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(App::new(cc, startup)?) as Box<dyn eframe::App>)
+            Ok(Box::new(App::new(cc, startup, controls_only)?) as Box<dyn eframe::App>)
         }),
     );
     match &run {
@@ -236,7 +244,51 @@ fn main() -> Result<()> {
 /// How long a shuffled GL SHOW mode stays up before auto-cycling to another.
 const SHUFFLE_PERIOD: std::time::Duration = std::time::Duration::from_secs(18);
 
+/// A zero-delay egui request queues an additional frame after the requested one.
+/// The timer already issues every heartbeat, so request exactly one repaint.
+fn request_heartbeat_frame(ctx: &egui::Context) {
+    ctx.request_repaint_after(std::time::Duration::from_nanos(1));
+}
+
+/// Window size is in native logical pixels; egui layout is further divided by
+/// the user's zoom. Do not allow restoring/resizing a window to leave less than
+/// the layout's minimum point size. Never increase zoom automatically.
+fn fitted_zoom(logical_size: egui::Vec2, requested: f32) -> f32 {
+    let requested = if requested.is_finite() && requested > 0.0 { requested } else { 1.0 };
+    if logical_size.x < 2.0 || logical_size.y < 2.0 { return requested; }
+    let limit = (logical_size.x / MIN_INNER_W).min(logical_size.y / MIN_INNER_H);
+    requested.min((limit * 100.0).floor() / 100.0).max(0.5)
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    #[test]
+    fn zoom_fits_small_restored_window_and_preserves_large_window_preference() {
+        assert_eq!(fitted_zoom(egui::vec2(640.0, 300.0), 2.3), 1.0);
+        assert_eq!(fitted_zoom(egui::vec2(1000.0, 460.0), 2.3), 1.53);
+        assert_eq!(fitted_zoom(egui::vec2(1600.0, 900.0), 2.3), 2.3);
+        assert_eq!(fitted_zoom(egui::vec2(1000.0, 460.0), 1.0), 1.0);
+        assert_eq!(fitted_zoom(egui::Vec2::ZERO, 2.3), 2.3);
+    }
+
+    #[test]
+    fn heartbeat_does_not_queue_an_extra_frame() {
+        let ctx = egui::Context::default();
+        for _ in 0..5 { let _ = ctx.run(Default::default(), |_| {}); }
+        ctx.request_repaint();
+        let extra = ctx.run(Default::default(), |_| {});
+        assert!(extra.viewport_output[&egui::ViewportId::ROOT].repaint_delay.is_zero());
+        for _ in 0..3 { let _ = ctx.run(Default::default(), |_| {}); }
+        request_heartbeat_frame(&ctx);
+        let single = ctx.run(Default::default(), |_| {});
+        assert_eq!(single.viewport_output[&egui::ViewportId::ROOT].repaint_delay, std::time::Duration::MAX);
+    }
+}
+
 struct App {
+    controls_only: bool,
     state: state_writer::StateWriter,
     show_recovery: bool,
     bands: [Band; NUM_BANDS],
@@ -265,14 +317,15 @@ struct App {
     /// DoubleClick handlers and a second launch clear it. A tray'd window gets
     /// no OS events, so nothing may infer this one.
     tray_hidden: Arc<AtomicBool>,
-    /// Mirrors `tray_hidden` for the visualizer's capture thread: while set, the
-    /// WASAPI loopback session is released, so a tray'd TrontEQ captures no audio
-    /// and runs no FFT. Set/cleared at the same sites as `tray_hidden`.
+    /// Pause capture whenever the native window cannot be seen, including
+    /// ordinary minimize. The heartbeat can set this without a final UI frame.
     viz_paused: Arc<AtomicBool>,
     /// DERIVED: false whenever nobody can see the window (tray'd, minimized,
     /// cloaked, collapsed) -> slow idle repaint. Recomputed every frame by
     /// `presentable`; read by the heartbeat thread.
     visible: Arc<AtomicBool>,
+    last_visible_frame: Option<std::time::Instant>,
+    restore_reports: u8,
     /// Last inner size that was actually sane, in POINTS (what
     /// `ViewportCommand::InnerSize` takes), to restore to when the window
     /// desyncs. See `heal_tiny_window`.
@@ -353,7 +406,7 @@ enum Modal {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext, startup: bool) -> Result<Self> {
+    fn new(cc: &eframe::CreationContext, startup: bool, controls_only: bool) -> Result<Self> {
         let ctx = &cc.egui_ctx;
         // Native window handle for raw-Win32 hide/show (eframe's Visible command
         // can't restore a hidden window — proven in trontclicker/PSM).
@@ -407,7 +460,7 @@ impl App {
         let selected_device = devices::selected_index(&devices, None);
 
         // Compile the GL viz stage once (glow backend exposes the context here).
-        let gl_stage = cc.gl.as_ref().and_then(|gl| match glstage::GlStage::new(gl) {
+        let gl_stage = cc.gl.as_ref().filter(|_| !controls_only).and_then(|gl| match glstage::GlStage::new(gl) {
             Ok(s) => {
                 log_line("glstage: shaders compiled");
                 Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
@@ -506,10 +559,8 @@ impl App {
         let tray_hidden = Arc::new(AtomicBool::new(false));
         let visible = Arc::new(AtomicBool::new(true));
 
-        // Tracks `tray_hidden`, but owned separately because the visualizer thread
-        // must read it from outside egui: while tray'd the loopback capture session
-        // is released entirely, so the process holds no WASAPI client and does no
-        // FFT for a window nobody can see. Set at the same four sites.
+        // Shared with the heartbeat so ordinary minimize can release capture
+        // even when Windows stops delivering update() calls immediately.
         let viz_paused = Arc::new(AtomicBool::new(false));
 
         // Repaint heartbeat thread (Boxel pattern): winit DEFERS
@@ -526,16 +577,28 @@ impl App {
         {
             let c = ctx.clone();
             let v = visible.clone();
+            let paused = viz_paused.clone();
             std::thread::spawn(move || {
                 log_line(&format!("thread: heartbeat tid={}", tid()));
                 unsafe {
                     let _ = windows::Win32::Media::timeBeginPeriod(1);
                 }
-                let tick = std::time::Duration::from_micros(16_666);
+                let tick = if controls_only { std::time::Duration::from_millis(100) }
+                    else { std::time::Duration::from_micros(16_666) };
                 let mut next = std::time::Instant::now() + tick;
                 loop {
+                    // Minimizing can stop redraw delivery before update() gets
+                    // to clear its cached visibility. Never depend on that last
+                    // frame to stop repaint requests or the capture session.
+                    if !win::is_on_screen(app_hwnd) || win::is_cloaked(app_hwnd) {
+                        v.store(false, Ordering::Relaxed);
+                        paused.store(true, Ordering::Relaxed);
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        next = std::time::Instant::now() + tick;
+                        continue;
+                    }
                     if !v.load(Ordering::Relaxed) {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        std::thread::sleep(std::time::Duration::from_millis(100));
                         next = std::time::Instant::now() + tick;
                         // Pulse ONLY at a window the OS says is on screen.
                         //
@@ -553,7 +616,7 @@ impl App {
                         // nobody to request the repaint that would let update()
                         // notice. Polling the real state covers every route back.
                         if win::is_on_screen(app_hwnd) {
-                            c.request_repaint();
+                            request_heartbeat_frame(&c);
                         }
                         continue;
                     }
@@ -566,7 +629,7 @@ impl App {
                     if next < std::time::Instant::now() {
                         next = std::time::Instant::now() + tick;
                     }
-                    c.request_repaint();
+                    request_heartbeat_frame(&c);
                 }
             });
         }
@@ -618,6 +681,7 @@ impl App {
 
         // Push an initial committed state so APO stops bypassing.
         let mut me = App {
+            controls_only,
             show_recovery: state.problem.is_some(),
             state,
             bands,
@@ -629,7 +693,8 @@ impl App {
             delay_ms,
             show_about: false,
             rainbow: ui_settings.rainbow,
-            viz: visualizer::Visualizer::start(viz_paused.clone()),
+            viz: if controls_only { visualizer::Visualizer::disabled() }
+                else { visualizer::Visualizer::start(viz_paused.clone()) },
             layers: ui_settings.layers,
             capture: visualizer::Snapshot::empty(),
             spectro_revision: u64::MAX,
@@ -641,6 +706,8 @@ impl App {
             tray_hidden,
             viz_paused,
             visible,
+            last_visible_frame: None,
+            restore_reports: 0,
             good_size: None, // learned from the first sane frame; never guessed
             small_frames: 0,
             fps_frames: 0,
@@ -712,7 +779,10 @@ impl App {
     /// because it is too small still has to get frames, or it could never resize
     /// itself back and would stay broken until restarted.
     fn heal_tiny_window(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
+        // The native window is authoritative on restore. Cached egui viewport
+        // metadata can still describe the last minimized frame.
+        if !win::is_on_screen(self.app_hwnd)
+            || (self.app_hwnd == 0 && ctx.input(|i| i.viewport().minimized).unwrap_or(false)) {
             return; // reported size is meaningless while minimized
         }
         // UNITS MATTER HERE, and getting them wrong is what made the window
@@ -802,7 +872,8 @@ impl App {
                 return false;
             }
         }
-        if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
+        if !win::is_on_screen(self.app_hwnd)
+            || (self.app_hwnd == 0 && ctx.input(|i| i.viewport().minimized).unwrap_or(false)) {
             return false;
         }
         if win::is_cloaked(self.app_hwnd) {
@@ -990,7 +1061,7 @@ impl eframe::App for App {
             self.profiler.overlay = !self.profiler.overlay;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) { self.viz_browser.gallery.open = false; }
-        if !self.viz_browser.gallery.open { self.presentation.input(ctx); }
+        if !self.controls_only && !self.viz_browser.gallery.open { self.presentation.input(ctx); }
         let step = std::mem::take(&mut self.presentation.scene_step);
         if step != 0 {
             let pool = self.viz_settings.scene_pool();
@@ -1089,10 +1160,12 @@ impl eframe::App for App {
         // Fold every "nobody can see this" state into the one flag the heartbeat
         // thread reads. This is a pure recompute from `tray_hidden` + live window
         // state, so un-minimizing or un-cloaking restores 60fps by itself on the
-        // next idle pulse (worst case 500ms).
+        // next idle pulse (at most two 100ms polling intervals).
         let presentable = self.presentable(ctx);
-        self.visible.store(presentable, Ordering::Relaxed);
+        let was_visible = self.visible.swap(presentable, Ordering::Relaxed);
+        self.viz_paused.store(!presentable, Ordering::Relaxed);
         if !presentable {
+            self.last_visible_frame = None;
             self.sound_editor.finish_gesture();
             self.state.checkpoint();
             // Build no UI and upload no textures. Beyond the CPU saving this is
@@ -1106,6 +1179,34 @@ impl eframe::App for App {
             // service a repaint. Sleeping here was tried and changed nothing,
             // because while tray'd this function is not called at all.
             return;
+        }
+
+        let zoom = ctx.zoom_factor();
+        let logical_size = ctx.content_rect().size() * zoom;
+        let fit = fitted_zoom(logical_size, zoom);
+        if fit + 0.01 < zoom {
+            log_line(&format!("zoom recovery: {:.0}% -> {:.0}% for {:.0}x{:.0} logical window", zoom * 100.0, fit * 100.0, logical_size.x, logical_size.y));
+            ctx.set_zoom_factor(fit);
+            self.good_size = None;
+            self.small_frames = 0;
+            return; // Rebuild with the new scale on the following frame.
+        }
+
+        let now = std::time::Instant::now();
+        let elapsed = self.last_visible_frame.replace(now).map(|last| now.duration_since(last).as_secs_f32());
+        let resumed = !was_visible || elapsed.is_none_or(|seconds| seconds > 0.25);
+        let visual_dt = if resumed { 1.0 / 60.0 } else {
+            glstage::live_frame_seconds(elapsed.unwrap()).min(0.1)
+        };
+        if resumed {
+            if let Some(stage) = &self.gl_stage {
+                if let Ok(mut stage) = stage.lock() { stage.pause_clock(); }
+            }
+            self.fps_frames = 0;
+            self.fps_t0 = now;
+            self.frame_ms = 0.0;
+            self.restore_reports = 2;
+            log_line(&format!("render resume: discarded {:.3}s hidden/stalled interval", elapsed.unwrap_or(0.0)));
         }
 
         // Read APO telemetry up front: the toolbar warning chip and the bottom
@@ -1123,6 +1224,12 @@ impl eframe::App for App {
         // reads through the chrome; the EQ canvas + OUT meter paint their
         // own opaque fills and stay solid dark regardless (house rule).
         theme::paint_gradient(ctx);
+
+        if self.controls_only {
+            egui::TopBottomPanel::top("controls-only").show(ctx, |ui| {
+                ui.label("Controls only: visualizer paused for troubleshooting");
+            });
+        }
 
         if !self.presentation.active {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -1429,7 +1536,7 @@ impl eframe::App for App {
         let t_canvas = std::time::Instant::now();
         // Uniforms for the GL stage: VizBus stats + theme accent + the audio
         // textures' source data, all by value (Copy) for the paint callback.
-        let dt=ctx.input(|i| i.stable_dt).clamp(0.0,0.1);
+        let dt=visual_dt;
         let replaying=self.viz_browser.recorder.playing;
         let mix=if replaying{self.viz_settings.performance.crossfade}else{self.viz_browser.performance.tick(&mut self.show.mode,&mut self.viz_settings,&analyzed.bus,dt)};
         let swapped= !replaying && std::mem::take(&mut self.viz_browser.performance.swap_decks);
@@ -1451,8 +1558,8 @@ impl eframe::App for App {
         self.viz_browser.performance.tick_pads(&self.viz_settings,&mut self.viz_browser.motion,dt);
         self.viz_browser.performance.held=pointer_held;
         self.viz_browser.performance.apply_pads(&mut uni);
-        uni.draw_editor=!self.presentation.active && !self.viz_settings.stage_view;
-        uni.draw_overlays=!self.presentation.active && (!self.viz_settings.stage_view || self.viz_settings.overlays_in_stage);
+        uni.draw_editor=self.controls_only || (!self.presentation.active && !self.viz_settings.stage_view);
+        uni.draw_overlays=!self.controls_only && !self.presentation.active && (!self.viz_settings.stage_view || self.viz_settings.overlays_in_stage);
         let mix=self.viz_browser.motion.value(&self.viz_settings.motion,"crossfade",mix);
         let mut deck_b=if self.viz_settings.performance.enabled {
             self.viz_settings.performance.deck_b.as_ref().map(|look| {
@@ -1480,7 +1587,9 @@ impl eframe::App for App {
             };
             let bands = &mut self.bands;
             let selected = &mut self.selected_band;
-            let show = &mut self.show;
+            // Keep the saved look intact while showing a plain EQ canvas.
+            let mut silent_show = show::ShowState::new(show::ShowMode::Off);
+            let show = if self.controls_only { &mut silent_show } else { &mut self.show };
             let gl = self.gl_stage.as_ref();
             let (sample_rate, rainbow) = (self.sample_rate, self.rainbow);
             let panel = egui::CentralPanel::default();
@@ -1736,6 +1845,14 @@ impl eframe::App for App {
             self.fps = self.fps_frames as f32 / el;
             self.fps_frames = 0;
             self.fps_t0 = std::time::Instant::now();
+            if self.restore_reports > 0 {
+                self.restore_reports -= 1;
+                let gpu_ms = self.gl_stage.as_ref().and_then(|stage| stage.lock().ok().and_then(|stage| stage.stats().gpu_ms));
+                log_line(&format!("render restored: {:.1} fps; frame {:.2} ms; update {:.2} ms; GPU {:?} ms",
+                    self.fps, self.frame_ms, self.profiler.ms(profiler::Scope::Update).0, gpu_ms));
+                log_line(&format!("render layout: zoom {:.2}; points {:?}; repaint causes {:?}",
+                    ctx.zoom_factor(), ctx.content_rect().size(), ctx.repaint_causes()));
+            }
         }
     }
 }
