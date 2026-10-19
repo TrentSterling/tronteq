@@ -10,6 +10,8 @@
   simulation step of each displayed frame. Add bounded restore diagnostics.
 - Add read-only `tronteq-cli audio-status` for Windows output and session volume,
   mute state, and live peak meters.
+- Preserve theme accents across light/dark changes, improve link contrast, and
+  show executable path/version details in About and installation diagnostics.
 - Validation: 158 tests passed; installed visualizer recovered at 60 FPS and
   the owner confirmed it working. See the October 19 recovery notes.
 
