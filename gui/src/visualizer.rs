@@ -66,6 +66,14 @@ pub struct Visualizer {
     handle: Option<JoinHandle<()>>,
 }
 impl Visualizer {
+    /// A controls-only launch never creates a WASAPI client or capture thread.
+    pub fn disabled() -> Self {
+        Self {
+            shared: Arc::new(Mutex::new(Snapshot { status: Status::Paused, ..Snapshot::empty() })),
+            stop: Arc::new(AtomicBool::new(true)),
+            handle: None,
+        }
+    }
     /// A hidden-to-tray app releases its loopback client completely.
     pub fn start(paused: Arc<AtomicBool>) -> Self {
         let shared = Arc::new(Mutex::new(Snapshot::empty()));

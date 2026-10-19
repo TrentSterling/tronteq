@@ -1,5 +1,11 @@
 # TrontEQ render checks
 
+For restore regressions, run `tronteq-audit-probe --restore-only`. It exercises
+the production renderer with a heavy effects stack and simulated 1-second,
+1-hour, and 3-day gaps, without opening the installed app or its settings.
+`--render-only` runs the full existing graphics checks without generating UI
+previews. See `docs/2026-10-16-restore-lag.md` for the 0.18.1 repair receipt.
+
 ## Live music gauntlet
 
 With music playing, run `powershell -File tools/run-viz-gauntlet.ps1`.

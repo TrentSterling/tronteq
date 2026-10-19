@@ -4,7 +4,7 @@ Zero-latency Windows system EQ. Our own Audio Processing Object plus a Rust efra
 
 ## Architecture
 
-Local GUI 0.18.0: `viz_motion.rs` owns persisted routes and nonpersisted smoothed
+Local GUI 0.18.5: `viz_motion.rs` owns persisted routes and nonpersisted smoothed
 runtime values; `viz_audition.rs` owns bounded analysis replay and review ratings.
 The renderer receives resolved values without mutating authored settings. A replay
 epoch resets envelopes, feedback and spectrum history. Saved looks include routes,

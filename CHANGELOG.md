@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.18.5] - 2026-10-19
+
+- Keep controls-only diagnostics explicit to one launch with `--controls-only`.
+  Legacy marker files no longer disable the visualizer on normal startup.
+- Pause capture and rendering while the native window is minimized or hidden;
+  discard elapsed animation time on restore and fit zoom to compact windows.
+- Request one frame per heartbeat and run the effects stack only on the final
+  simulation step of each displayed frame. Add bounded restore diagnostics.
+- Add read-only `tronteq-cli audio-status` for Windows output and session volume,
+  mute state, and live peak meters.
+- Validation: 158 tests passed; installed visualizer recovered at 60 FPS and
+  the owner confirmed it working. See the October 19 recovery notes.
+
 ## [0.18.0] - 2026-10-13
 
 - Adaptive signal response with per-source range adaptation, attack and release,

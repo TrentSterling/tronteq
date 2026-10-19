@@ -30,6 +30,16 @@ pub const STEREO_W: usize = 256;
 /// Spectrum-history rows (the audio terrain's depth).
 pub const HIST_ROWS: usize = 128;
 
+/// A hidden window or a suspended machine has no animation time to repay.
+/// Keep ordinary 20/60/144 Hz timing intact, but restart after a long gap.
+pub fn live_frame_seconds(elapsed: f32) -> f32 {
+    if !elapsed.is_finite() || elapsed > 0.25 {
+        1.0 / 60.0
+    } else {
+        elapsed.max(0.0)
+    }
+}
+
 /// Everything a shader frame needs, by value (Copy) so the paint callback can
 /// own it without borrowing App.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -2749,7 +2759,14 @@ impl GlStage {
         let now = Instant::now();
         let elapsed = self.last_paint.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(1.0 / 60.0);
         self.last_paint = Some(now);
-        self.paint_elapsed(gl, u, vp, u.step_seconds.unwrap_or(elapsed));
+        self.paint_elapsed(gl, u, vp, u.step_seconds.unwrap_or_else(|| live_frame_seconds(elapsed)));
+    }
+
+    /// Pause only the wall clock, preserving the selected scene and its image.
+    pub fn pause_clock(&mut self) {
+        self.last_paint = None;
+        self.accumulator = 0.0;
+        if let Some(deck) = &mut self.deck_b { deck.pause_clock(); }
     }
 
     /// All scenes, including feedback, use the same 60 Hz simulation clock.
@@ -2839,17 +2856,22 @@ impl GlStage {
         }
         if changed || resized {
             self.accumulator = 0.0;
-            self.paint_frame(gl, u, vp, true);
+            self.paint_frame(gl, u, vp, true, true);
             return;
         }
         self.accumulator += elapsed.clamp(0.0, 0.05) * u.speed.clamp(0.0, 2.0);
         let steps = ((self.accumulator * 60.0 + 1e-5).floor() as usize).min(6);
         self.accumulator = (self.accumulator - steps as f32 / 60.0).max(0.0);
-        if steps == 0 { self.paint_frame(gl, u, vp, false); }
-        else { for _ in 0..steps { self.paint_frame(gl, u, vp, true); } }
+        if steps == 0 { self.paint_frame(gl, u, vp, false, true); }
+        else {
+            // Effects and presentation do not feed the simulation. Running the
+            // complete stack on intermediate steps amplifies a slow frame into
+            // more GPU work exactly when the renderer is already falling behind.
+            for step in 0..steps { self.paint_frame(gl, u, vp, true, step + 1 == steps); }
+        }
     }
 
-    fn paint_frame(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4], advance: bool) {
+    fn paint_frame(&mut self, gl: &glow::Context, u: &Uniforms, vp: [i32; 4], advance: bool, present: bool) {
         unsafe {
             let (w, h) = render_size(vp, u.render_scale);
             if w < 8 || h < 8 {
@@ -2956,6 +2978,17 @@ impl GlStage {
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             }
 
+            self.ping = dst;
+            if !present {
+                // Each next step must inherit the caller's target, not the
+                // feedback FBO left bound by this intermediate simulation pass.
+                gl.bind_framebuffer(glow::FRAMEBUFFER, native_fbo(prev_fbo));
+                gl.viewport(vp[0], vp[1], vp[2], vp[3]);
+                gl.enable(glow::SCISSOR_TEST);
+                gl.bind_vertex_array(None);
+                return;
+            }
+
             // Each enabled effect reads its predecessor and writes to the other post target.
             let mut order = u.fx_order;
             let mut mixes = u.fx_mix;
@@ -3035,5 +3068,27 @@ impl GlStage {
 
             self.ping = dst;
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::live_frame_seconds;
+
+    #[test]
+    fn restore_discards_hidden_time_and_recovers_on_the_next_frame() {
+        for elapsed in [1.0, 3600.0, 3.0 * 24.0 * 3600.0, f32::INFINITY, f32::NAN] {
+            assert_eq!(live_frame_seconds(elapsed), 1.0 / 60.0);
+            assert_eq!(live_frame_seconds(1.0 / 144.0), 1.0 / 144.0);
+        }
+    }
+
+    #[test]
+    fn ordinary_frame_rates_and_frozen_time_are_unchanged() {
+        for fps in [20.0, 30.0, 60.0, 144.0] {
+            assert_eq!(live_frame_seconds(1.0 / fps), 1.0 / fps);
+        }
+        assert_eq!(live_frame_seconds(0.0), 0.0);
+        assert_eq!(live_frame_seconds(-1.0), 0.0);
     }
 }

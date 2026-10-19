@@ -8,6 +8,7 @@ mod com_reg;
 mod endpoint;
 mod setup;
 mod signing;
+mod audio_status;
 
 #[derive(Parser)]
 #[command(name = "tronteq-cli")]
@@ -23,6 +24,8 @@ enum Command {
     Check,
     /// List active audio output endpoints.
     ListDevices,
+    /// Inspect Windows endpoint/session volume and live meters without changing audio.
+    AudioStatus,
     /// Sign (if needed), register the CLSID, and attach the APO to one output device.
     Install {
         /// Index from `list-devices`. If omitted, uses the default output.
@@ -46,6 +49,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Check => cmd_check(),
         Command::ListDevices => cmd_list_devices(),
+        Command::AudioStatus => audio_status::print_status(),
         Command::Install { device, device_id } => cmd_install(device, device_id.as_deref()),
         Command::Uninstall => cmd_uninstall(),
         Command::RegisterAutostart => cmd_register_autostart(),
